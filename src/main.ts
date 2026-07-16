@@ -277,9 +277,17 @@ function blocosSemestreHTML(sem) {
         ? `<label>Horas/semana (total) <input type="number" min="0" max="60" value="${w.horas}" data-trab="horas" data-sem="${idx}"></label>`
         : `<label class="muted" style="flex-basis:100%">Carga semanal: <b>${K.fmtDur(w.horas)}</b> <span class="muted">— derivada da janela (janela × 5 dias úteis)</span></label>`;
     const campoJanela = isFlex
-        ? `<label>Trabalhar entre <input type="time" step="300" value="${w.inicio}" data-trab="comeco" data-sem="${idx}"> e <input type="time" step="300" value="${w.fim}" data-trab="termino" data-sem="${idx}"> <span class="muted">— faixa-limite: o trabalho se encaixa ao redor das aulas</span></label>`
+        ? `<label data-tip="Faixa-limite onde o trabalho pode cair. Ela se adapta ao alterar as horas/semana: alarga só quando fica estreita demais p/ o total, e mantém a folga que já tiver — folga extra é o que deixa o trabalho desviar das aulas.">Trabalhar entre <input type="time" step="300" value="${w.inicio}" data-trab="comeco" data-sem="${idx}"> e <input type="time" step="300" value="${w.fim}" data-trab="termino" data-sem="${idx}"> <span class="muted">— faixa-limite: o trabalho se encaixa ao redor das aulas</span></label>`
         : `<label>Trabalhar das <input type="time" step="300" value="${w.inicio}" data-trab="comeco" data-sem="${idx}"> às <input type="time" step="300" value="${w.fim}" data-trab="termino" data-sem="${idx}"> <span class="muted">— janela fixa todo dia; nenhuma aula pode ocupá-la</span></label>`;
+    // Teto da faixa: o trabalho se espalha pelos 5 dias úteis, então nenhuma grade fecha mais que
+    // (duração da faixa × 5). Acima disso o déficit é permanente — avisa aqui, na origem, em vez de
+    // deixar o usuário descobrir pelo resumo da grade.
+    const capJanela = K.janelaCapSemanal(w);
+    const avisoJanela = isFlex && w.trabalha && capJanela < w.horas - 1e-6
+        ? `<div class="muted" style="flex-basis:100%;color:var(--secondary);font-size:12px">⚠ Esta faixa comporta no máx. <b>${K.fmtDur(capJanela)}</b>/semana (${K.fmtDur(K.janelaHoras(w))} × 5 dias úteis) — menos que as <b>${K.fmtDur(w.horas)}</b> pedidas, então nenhuma grade fecha o total. <button class="btn btn-sm btn-ghost" data-trab-ajustar="${idx}" data-tip="Alarga a faixa até comportar ${esc(K.fmtDur(w.horas))}/semana">↔ Ajustar faixa</button></div>`
+        : '';
     const camposTrab = `${campoJanela}
+    ${avisoJanela}
     ${campoHoras}
     ${folgaLabel}`;
     // Âncora (só flexível): onde o bloco diário se fixa quando há aula no meio da janela.
@@ -1151,6 +1159,7 @@ async function onClick(e) {
     const tnao = t.closest('[data-trab-nao]'); if (tnao) { const i = +tnao.dataset.trabNao; trabRascunhoSet(i, { trabalha: false }); salvar(); rerenderKeepOpen(); return; }
     const tmo = t.closest('[data-trab-modo]'); if (tmo) { const i = +tmo.dataset.sem; trabRascunhoSet(i, { modo: tmo.dataset.trabModo }); salvar(); rerenderKeepOpen(); return; }
     const tan = t.closest('[data-trab-ancora]'); if (tan) { const i = +tan.dataset.sem; trabRascunhoSet(i, { ancora: tan.dataset.trabAncora }); salvar(); rerenderKeepOpen(); return; }
+    const taj = t.closest('[data-trab-ajustar]'); if (taj) { const i = +taj.dataset.trabAjustar; trabRascunhoSet(i, K.ajustarJanelaParaHoras(trabRascunhoOuSalvo(i))); salvar(); toast('Faixa-limite alargada p/ comportar o total semanal'); rerenderKeepOpen(); return; }
     // Aplicar rascunho -> copia trabalho E bloqueios manuais para o estado salvo e recalcula
     const tapl = t.closest('[data-trab-aplicar]'); if (tapl) { const i = +tapl.dataset.trabAplicar; const a = trabAplicarRascunho(i); const b = bloqAplicarRascunho(i); if (a || b) limparEscolhasDesde(i); toast('Horários travados aplicados · grades recalculadas'); rerenderKeepOpen(); return; }
     // Descartar rascunho -> restaura trabalho E bloqueios salvos
@@ -1237,6 +1246,9 @@ function onChange(e) {
         else if (k === 'horas' || k === 'folga') updates[k] = +tr.value || 0;
         else updates[k] = tr.value;
         trabRascunhoSet(i, updates);
+        // Mão única: alterar as horas/semana adapta a faixa-limite (só a alarga se ficou estreita
+        // demais p/ o total). Editar a faixa não mexe nas horas — aí o aviso de teto é que aparece.
+        if (k === 'horas') trabRascunhoSet(i, K.ajustarJanelaParaHoras(trabRascunhoOuSalvo(i)));
         salvar(); rerenderKeepOpen(); return;
     }
 }

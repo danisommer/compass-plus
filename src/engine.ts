@@ -18,6 +18,9 @@ const DIAS = { 2: 'Segunda', 3: 'Terça', 4: 'Quarta', 5: 'Quinta', 6: 'Sexta', 
 const ORDEM_SLOTS = [];
 ['M', 'T', 'N'].forEach(p => { const n = p === 'N' ? 5 : 6; for (let s = 1; s <= n; s++) ORDEM_SLOTS.push([p, s]); });
 function hhmmMin(s) { const m = String(s).match(/(\d{1,2})[h:](\d{2})/); return m ? (+m[1]) * 60 + (+m[2]) : 0; }
+// minutos → 'HH:MM' (formato de <input type="time">; fmtHHMM usa 'HHhMM', só p/ exibição)
+const minHHMM = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(Math.round(m % 60)).padStart(2, '0')}`;
+const ceil5 = m => Math.ceil(m / 5) * 5;                   // p/ cima na grade de 5 min (= step do input de hora)
 function slotTexto(p, s) { const a = SLOTS[p] && SLOTS[p][s]; return a ? `${a[0]}–${a[1]}` : ''; }
 /* ---- Trabalho: dois modos (refatorado) ----
     UM eixo só: `modo` ∈ {'fixo', 'flexivel'}.
@@ -32,16 +35,51 @@ function slotTexto(p, s) { const a = SLOTS[p] && SLOTS[p][s]; return a ? `${a[0]
 const DIAS_UTEIS = [2, 3, 4, 5, 6];
 const SLOT_MIN = {};                                       // 'M1' -> {ini,fim} em minutos
 for (const [p, s] of ORDEM_SLOTS) { const a = SLOTS[p][s]; SLOT_MIN[p + s] = { ini: hhmmMin(a[0]), fim: hhmmMin(a[1]) }; }
+// Limites do dia letivo (M1 07h30 → N5 22h30). Só delimitam até onde a faixa-limite pode CRESCER
+// sozinha: fora deles não há aula para o trabalho desviar, então alargar mais não ajudaria a grade.
+const DIA_INI = 7 * 60 + 30, DIA_FIM = 22 * 60 + 30;
 const DEFAULT_TRAB = {
     trabalha: null,                          // null = não respondido | true = Sim | false = Não
     modo: 'fixo',                            // 'fixo' (trava a grade) | 'flexivel' (encaixa ao redor das aulas)
     horas: 20,                               // total semanal (flexível); no fixo é derivado da janela
-    inicio: '08:00', fim: '12:00',           // janela: bloco exato (fixo) ou faixa-limite (flexível)
+    inicio: '08:00', fim: '',                // janela: bloco exato (fixo) ou faixa-limite (flexível)
     ancora: 'livre',                         // só flexível: 'inicio' (começo fixo) | 'fim' (fim fixo) | 'livre'
     folga: 0                                 // intervalo mínimo (min) trabalho↔aula, nos dois sentidos
 };
 // duração da janela [inicio, fim] em horas
 function janelaHoras(w) { return Math.max(0, (hhmmMin(w.fim) - hhmmMin(w.inicio)) / 60); }
+// teto semanal da janela: o trabalho se espalha pelos 5 dias úteis → nenhuma grade fecha mais que isto
+function janelaCapSemanal(w) { return janelaHoras(w) * DIAS_UTEIS.length; }
+// span mínimo (min) que a faixa precisa ter p/ comportar `horas` na semana
+function spanMinPara(horas) { return ceil5(Math.max(0, +horas || 0) / DIAS_UTEIS.length * 60); }
+// a janela padrão ACOMPANHA as horas padrão em vez de ser um valor fixo: se DEFAULT_TRAB.horas mudar,
+// a faixa nasce do tamanho certo (20h → 08:00–12:00) sem precisar reeditar este literal.
+DEFAULT_TRAB.fim = minHHMM(hhmmMin(DEFAULT_TRAB.inicio) + spanMinPara(DEFAULT_TRAB.horas));
+
+/* Faixa-limite × horas/semana (só modo flexível) — relação de MÃO ÚNICA:
+     • mudou `horas`  → a faixa se adapta (ajustarJanelaParaHoras): cresce só se ficou estreita demais
+                        p/ comportar horas/5 por dia. Se já cabe, a faixa é preservada como está — a
+                        folga extra é justamente o que deixa o trabalho desviar das aulas.
+     • mudou a faixa  → `horas` NÃO muda. O usuário manda; se a faixa não comportar o total, a UI avisa
+                        (janelaCapSemanal < horas) em vez de corrigir sozinha.
+   Sem isso, `horas` acima do teto da faixa gera um déficit que NENHUMA grade fecha — estado que o
+   usuário nunca quer e que era fácil não perceber. */
+function ajustarJanelaParaHoras(w) {
+    w = normTrab(w);
+    if (w.modo !== 'flexivel') return w;                   // fixo: a janela É o bloco; horas é derivado dela
+    const need = spanMinPara(w.horas);
+    let ini = hhmmMin(w.inicio), fim = hhmmMin(w.fim);
+    if (fim - ini >= need) return w;                       // já comporta → preserva a faixa (e sua folga)
+    // uma faixa já fora do dia letivo vira o próprio limite: nunca encolhemos o que o usuário definiu
+    const lo = Math.min(ini, DIA_INI), hi = Math.max(fim, DIA_FIM);
+    const p = () => need - (fim - ini);                    // quanto ainda falta alargar
+    const cresceFim = () => { fim += Math.min(p(), hi - fim); };
+    const cresceIni = () => { ini -= Math.min(p(), ini - lo); };
+    // Cresce pela ponta livre: com âncora 'fim' o bloco fica colado no fim da faixa, então mexer no fim
+    // moveria justamente a ponta que o usuário fixou → cresce p/ trás. Nos demais casos, o fim primeiro.
+    if (w.ancora === 'fim') { cresceIni(); cresceFim(); } else { cresceFim(); cresceIni(); }
+    return Object.assign({}, w, { inicio: minHHMM(ini), fim: minHHMM(fim) });
+}
 function normTrab(w) {
     w = w || {};
     const o = Object.assign({}, DEFAULT_TRAB, w);
@@ -528,6 +566,7 @@ const API = {
     SLOTS, DIAS,
     ORDEM_SLOTS, hhmmMin, slotTexto, blocosTrabalho,
     DIAS_UTEIS, DEFAULT_TRAB, normTrab, fmtHHMM, fmtDur, janelaTrab, janelaHoras, capacidadeDia,
+    janelaCapSemanal, spanMinPara, ajustarJanelaParaHoras,
     analiseDia, placeBloco, alocarTrab, ocupacaoPorDia, custoTrab, blocosTrabalhoCalc
 };
 
