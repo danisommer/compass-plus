@@ -165,30 +165,54 @@ function placeBloco(w, durMin, info) {
     return { startMin: start, endMin: end, horas: Math.max(0, (end - start) / 60) };
 }
 
-const MIN5 = 5 / 60;     // 5 minutos em horas
-// Arredonda horasPorDia à grade de 5 min PRESERVANDO a soma (método do maior resto): cada dia vai
-// p/ floor(quanta) e os quanta restantes p/ fechar o total são dados aos dias de maior fração — assim
-// o total semanal não perde minutos e a distribuição segue o mais homogênea possível. Respeita a
-// capacidade de cada dia (não ultrapassa o intervalo livre cortado pelas aulas).
-function snap5Aloc(horasPorDia, dias, capH, alvoSem) {
+// Grãos de granularidade preferidos, do mais grosso ao mais fino (minutos).
+const GRAOS_MIN = [60, 30, 15, 5];
+// Distribui `budget` horas entre os `dias` na grade `grainH` (em horas), o mais homogêneo possível
+// (método do maior resto), respeitando a capacidade de cada dia. Escreve em `out` e retorna o total.
+function distribuiGrade(out, dias, capH, budget, grainH) {
     const capQ = {}, base = {}, frac = []; let baseSum = 0, capSum = 0;
+    const alvo = budget / dias.length;                              // parcela homogênea por dia
     for (const d of dias) {
-        capQ[d] = Math.floor(capH(d) / MIN5 + 1e-9);                 // capacidade em quanta de 5 min
-        const q = Math.min(horasPorDia[d] / MIN5, capQ[d]);
+        capQ[d] = Math.floor(capH(d) / grainH + 1e-9);              // capacidade em quanta do grão
+        const q = Math.min(alvo / grainH, capQ[d]);
         base[d] = Math.floor(q + 1e-9); baseSum += base[d]; capSum += capQ[d];
         frac.push({ d, f: q - base[d] });
     }
-    let resto = Math.min(Math.round(alvoSem / MIN5), capSum) - baseSum;   // quanta p/ fechar o total
-    frac.sort((a, b) => b.f - a.f);                                       // maior fração primeiro
+    // floor (não round): com grão grosso, um budget não-múltiplo do grão NÃO deve estourar o total —
+    // fica aquém, o que corretamente reprova esse grão em snapAloc e desce p/ um grão mais fino.
+    let resto = Math.min(Math.floor(budget / grainH + 1e-9), capSum) - baseSum;   // quanta p/ fechar o total
+    frac.sort((a, b) => b.f - a.f);                                        // maior fração primeiro
     for (const { d } of frac) { if (resto <= 0) break; if (base[d] < capQ[d]) { base[d]++; resto--; } }
     while (resto > 0) { const d = dias.find(x => base[x] < capQ[x]); if (d == null) break; base[d]++; resto--; }
-    for (const d of dias) horasPorDia[d] = base[d] * MIN5;
+    let total = 0; for (const d of dias) { out[d] = base[d] * grainH; total += out[d]; }
+    return total;
+}
+// Arredonda horasPorDia preferindo a MAIOR granularidade possível (1h → 30min → 15min → 5min),
+// evitando horários quebrados sem necessidade. Os dias SATURADOS (que trabalham até a fronteira de
+// uma aula = capacidade) ficam com o valor exato — essa fronteira é obrigatória e não deve ser
+// "arredondada" p/ menos. Só o orçamento restante, distribuído entre os dias no "nível de água",
+// é encaixado no grão mais grosso que ainda fecha o mesmo total que a grade fina de 5 min (i.e. sem
+// introduzir déficit). Ex.: total 30h com Seg travada em 4h30 → 25h30 nos 4 dias livres não fecha em
+// blocos de 1h, então desce p/ 30min (6h, 6h, 6h, 7h30) em vez de gerar 6h25/6h20.
+function snapAloc(horasPorDia, dias, capH, alvoSem) {
+    const sat = dias.filter(d => horasPorDia[d] >= capH(d) - 1e-9);
+    for (const d of sat) horasPorDia[d] = capH(d);                  // fixa no valor exato (fronteira de aula)
+    const livres = dias.filter(d => horasPorDia[d] < capH(d) - 1e-9);
+    const budget = Math.max(0, alvoSem - sat.reduce((a, d) => a + capH(d), 0));
+    if (!livres.length || budget <= 1e-9) { for (const d of livres) horasPorDia[d] = 0; return; }
+    const fino = {}; const totalFino = distribuiGrade(fino, livres, capH, budget, 5 / 60);   // melhor alcançável
+    for (const g of GRAOS_MIN) {
+        if (g === 5) break;                                        // 5 min é o fallback (= grade fina)
+        const cand = {}; const total = distribuiGrade(cand, livres, capH, budget, g / 60);
+        if (total >= totalFino - 1e-9) { for (const d of livres) horasPorDia[d] = cand[d]; return; }
+    }
+    for (const d of livres) horasPorDia[d] = fino[d];              // nenhum grão grosso fecha → 5 min
 }
 
 // distribui o total semanal entre os dias úteis. FIXO: a janela inteira todo dia (bloco já travado).
 // FLEXÍVEL: busca HOMOGENEIDADE (alvoSem/nDias por dia) e só desvia quando a capacidade de um dia
-// força, redistribuindo a sobra aos dias com folga (water-filling). No fim, arredonda à grade de 5 min
-// preservando a soma (snap5Aloc), p/ os horários exibidos serem redondos sem perder o total semanal.
+// força, redistribuindo a sobra aos dias com folga (water-filling). No fim, arredonda pela MAIOR
+// granularidade que fecha o total (snapAloc: 1h → 30min → 15min → 5min), p/ horários redondos.
 function alocarTrab(w, infoPorDia) {
     w = normTrab(w);
     const alvoSem = Math.max(0, +w.horas || 0);
@@ -219,7 +243,7 @@ function alocarTrab(w, infoPorDia) {
             }
         }
     }
-    snap5Aloc(horasPorDia, dias, capH, alvoSem);            // grade de 5 min, soma preservada
+    snapAloc(horasPorDia, dias, capH, alvoSem);             // grão mais grosso que fecha o total
     const total = dias.reduce((a, d) => a + horasPorDia[d], 0);
     return { horasPorDia, deficit: Math.max(0, alvoSem - total), rigidConf: 0, conflitosNucleo };
 }
