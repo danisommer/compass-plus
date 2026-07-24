@@ -803,7 +803,11 @@ function planoSemestreHTML(sem) {
     }
 
     const editorAberto = S.editor && S.editor.idx === sem.idx;
-    const cards = [...sem.grades.map((g, i) => gradeCardHTML(g, i, sem, false, i === sem.recKey)), ...(sem.personalizadas || []).map((g, i) => gradeCardHTML(g, 'p' + i, sem, true, ('p' + i) === sem.recKey))];
+    // Seleção visual = UMA única grade. Como grades geradas e personalizadas podem ter os mesmos
+    // códigos, resolvemos a chave da grade escolhida priorizando o balde certo (custom×gerada) e a
+    // identidade por turma; assim nunca mais de um cartão fica marcado como "escolhida".
+    const selKey = gradeSelecionadaKey(sem);
+    const cards = [...sem.grades.map((g, i) => gradeCardHTML(g, i, sem, false, i === sem.recKey, i === selKey)), ...(sem.personalizadas || []).map((g, i) => gradeCardHTML(g, 'p' + i, sem, true, ('p' + i) === sem.recKey, ('p' + i) === selKey))];
     const montarCard = `<div class="gcard montar" data-montar="${sem.idx}"><div class="gh"><div><div class="gtitle">➕ Montar grade personalizada</div><div class="gsub">crie do zero — ou use “✏️ Editar” numa grade acima</div></div><div class="score" style="font-size:20px">＋</div></div></div>`;
     const temGrades = sem.grades && sem.grades.length;
     const headAcoes = sem.status === 'confirmado'
@@ -830,15 +834,14 @@ ${editorAberto ? editorHTML(sem) : ''}
 <div class="grades">${(cards.length ? cards.join('') : '<div class="banner info">Nenhuma grade gerada para este semestre.</div>')}${editorAberto ? '' : montarCard}</div>`;
 }
 
-function gradeCardHTML(g, i, sem, custom, isRec) {
-    const isSel = sem.status === 'confirmado' && sameGrade(g, sem.grade);
+function gradeCardHTML(g, i, sem, custom, isRec, isSel) {
     const rec = !!isRec;   // "Recomendada" = a grade de maior score dentro das restrições (definida em projetar)
+    const sel = !!isSel;   // "escolhida" = a grade confirmada — exatamente UM cartão (ver gradeSelecionadaKey)
     const aulas = g.sel.reduce((a, s) => a + (s.disciplina.chSemanal || 0), 0);
     const nblk = g.sel.filter(s => s.bloqueado).length;
-    const open = !!isRec || isSel;
-    const escolhida = sem.status === 'confirmado' && sameGrade(g, sem.grade);
+    const open = rec || sel;
     const scoreTip = scoreBreakdownTip(sem, g.sel);   // S9 — detalhamento ao passar o mouse
-    return `<div class="gcard ${rec ? 'rec' : ''} ${isSel ? 'sel' : ''} ${open ? 'open' : ''}" data-card="${i}">
+    return `<div class="gcard ${rec ? 'rec' : ''} ${sel ? 'sel' : ''} ${open ? 'open' : ''}" data-card="${i}">
 <div class="gh" data-toggle-card="${i}">
     <div><div class="gtitle">${custom ? 'Grade personalizada' : 'Grade #' + (i + 1)}${rec ? ' <span class="chip" style="color:var(--secondary)">Recomendada</span>' : ''}</div>
     <div class="gsub">${g.sel.length} disciplinas · ${aulas} aulas/sem · ${nblk ? ('<span style="color:var(--secondary)">' + nblk + ' em conflito</span>') : 'sem conflitos'}</div></div>
@@ -847,13 +850,31 @@ function gradeCardHTML(g, i, sem, custom, isRec) {
 <div class="gbody">
     ${g.sel.map(s => discRowHTML(s, sem)).join('')}
     <div class="gactions">
-    ${escolhida ? '<span class="chip" style="color:var(--success)">✓ Grade escolhida</span>' : `<button class="btn btn-sm btn-primary" data-escolher="${i}">Escolher esta grade</button>`}
+    ${sel ? '<span class="chip" style="color:var(--success)">✓ Grade escolhida</span>' : `<button class="btn btn-sm btn-primary" data-escolher="${i}">Escolher esta grade</button>`}
+    <button class="btn btn-sm btn-ghost" data-copiar-grade="${i}" data-sem="${sem.idx}" data-tip="Copiar a grade como extrato (código — turma)">📋 Copiar</button>
     <button class="btn btn-sm btn-ghost" data-editar="${i}" data-sem="${sem.idx}">✏️ Editar</button>
     ${custom ? `<button class="btn btn-sm btn-ghost" data-del-custom="${String(i).slice(1)}" data-sem="${sem.idx}" title="Excluir esta grade personalizada">🗑</button>` : ''}
     </div>
 </div></div>`;
 }
+// identidade só por códigos (compat.) e identidade completa (códigos + turma escolhida)
 function sameGrade(a, b) { if (!a || !b) return false; const ka = a.sel.map(s => s.disciplina.codigo).sort().join(','); const kb = b.sel.map(s => s.disciplina.codigo).sort().join(','); return ka === kb && ka.length > 0; }
+function gradeIdentTurma(g) { return g && g.sel ? g.sel.map(s => s.disciplina.codigo + ':' + (s.turma ? s.turma.turma : '')).sort().join(',') : ''; }
+function sameGradeFull(a, b) { const ka = gradeIdentTurma(a); return !!ka && ka === gradeIdentTurma(b); }
+// chave (i | 'p'+i) do ÚNICO cartão que representa a grade confirmada — ou null se nada confirmado.
+// Prioriza o balde correto (personalizada×gerada, por S.escolhas.custom) e a identidade por turma,
+// caindo para a identidade só-por-códigos; garante seleção visual consistente (um cartão só).
+function gradeSelecionadaKey(sem) {
+    if (sem.status !== 'confirmado') return null;
+    const gen = sem.grades.map((g, i) => ({ g, key: i }));
+    const per = (sem.personalizadas || []).map((g, i) => ({ g, key: 'p' + i }));
+    const prefCustom = !!(S.escolhas[sem.idx] && S.escolhas[sem.idx].custom);
+    const ordered = prefCustom ? [...per, ...gen] : [...gen, ...per];
+    const hit = ordered.find(c => sameGradeFull(c.g, sem.grade)) || ordered.find(c => sameGrade(c.g, sem.grade));
+    return hit ? hit.key : null;
+}
+// extrato de uma grade: "- CÓDIGO — TURMA" por linha (formato para copiar/colar)
+function extratoGrade(g) { return g.sel.map(s => `- ${s.disciplina.codigo} — ${s.turma ? s.turma.turma : '—'}`).join('\n'); }
 
 function discRowHTML(s, sem?) {
     const d = s.disciplina; const tp = tipoDe(d);
@@ -1160,6 +1181,7 @@ async function onClick(e) {
     if (t.closest('#reiniciar')) { if (confirm('Reiniciar tudo? Isso apaga o estado salvo e volta para a tela de upload.\n(Suas configurações de trabalho salvas são mantidas.)')) { localStorage.removeItem('compass_state'); setEstado(novoEstado()); hidratarPresets(); salvar(); render(); } return; }
     const tc = t.closest('[data-toggle-card]'); if (tc) { tc.closest('.gcard').classList.toggle('open'); return; }
     const ch = t.closest('[data-escolher]'); if (ch) return escolherGrade(ch.dataset.escolher);
+    const cg = t.closest('[data-copiar-grade]'); if (cg) return copiarGrade(cg.dataset.copiarGrade, +cg.dataset.sem);
     const rr = t.closest('[data-rm-rasc]'); if (rr) return removerRascunho(rr.dataset.rmRasc);
     // editor de grade
     const emo = t.closest('[data-montar]'); if (emo) return abrirEditor(+emo.dataset.montar, null);
@@ -1285,7 +1307,26 @@ function escolherGrade(i) {
     if (!g) return;
     S.escolhas[sem.idx] = { codigos: g.sel.map(s => s.disciplina.codigo), turmas: Object.fromEntries(g.sel.map(s => [s.disciplina.codigo, s.turma ? s.turma.turma : null])), score: g.score, custom: g.custom };
     limparEscolhasApos(sem.idx);
-    salvar(); toast('Grade confirmada para ' + sem.rotulo + ' · semestres seguintes recalculados'); render();
+    salvar(); toast('Grade confirmada para ' + sem.rotulo); render();
+}
+// copia texto p/ a área de transferência, com fallback p/ contextos sem a Clipboard API
+async function copiarTexto(txt) {
+    try { await navigator.clipboard.writeText(txt); return true; }
+    catch (e) {
+        try {
+            const ta = document.createElement('textarea'); ta.value = txt;
+            ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.focus(); ta.select();
+            const ok = document.execCommand('copy'); ta.remove(); return ok;
+        } catch (e2) { return false; }
+    }
+}
+async function copiarGrade(i, semIdx) {
+    const sem = D.projecao.find(s => s.idx === semIdx) || D.projecao[S.abaAtiva]; if (!sem) return;
+    const g = String(i).startsWith('p') ? (sem.personalizadas || [])[+String(i).slice(1)] : sem.grades[+i];
+    if (!g || !g.sel || !g.sel.length) { toast('Grade vazia — nada a copiar'); return; }
+    const ok = await copiarTexto(extratoGrade(g));
+    toast(ok ? `Grade copiada (${g.sel.length} disciplinas)` : 'Não foi possível copiar');
 }
 function removerRascunho(cod) {
     const sem = D.projecao[S.abaAtiva];
