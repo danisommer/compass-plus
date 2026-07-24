@@ -4,7 +4,9 @@ import K from './engine';
 const DEFAULT_PREF = { campusUnico: false, campus: 'CURITIBA', turnos: ['M', 'T', 'N'], cargaMin: 4, cargaMax: 7, preferenciaTrilhas: [], eletivaManual: 0 };
 let S: any = null;          // estado persistido
 let D: any = {};            // derivado (não persistido)
-const MAXSEM = 14;          // horizonte máximo de semestres projetados (a partir de 2026/2)
+// Foco em UM único semestre: o próximo (idx 1 = 2026/2), o dos dados de oferta inseridos.
+// A projeção multi-semestre foi removida — a otimização "para o futuro" continua embutida na
+// função de score (obrigatórias, fanout, alcance de dependentes futuros).
 
 function novoEstado() {
     return {
@@ -69,22 +71,6 @@ function trabAplicarRascunho(idx) {
     return true;
 }
 function trabDescartarRascunho(idx) { if (S.trabRascunho) delete S.trabRascunho[idx]; }
-// S3: replica a configuração de horários travados (trabalho + bloqueios manuais) de `idx`
-// para todos os semestres seguintes. Preenche até o fim do horizonte (MAXSEM), não só até o último
-// semestre atualmente projetado: travar o trabalho pode ADIAR a formatura para um semestre ainda não
-// projetado, que também precisa herdar a configuração (senão a formatura aparece sem o trabalho).
-function aplicarTrabSeguintes(idx) {
-    const w = K.normTrab(trabDoSem(idx)); const cfg = trabCfgDe(w); const manuais = manualBlocos(idx);
-    const projetados = new Set((D.projecao || []).map(s => s.idx));
-    let n = 0;
-    for (let i = idx + 1; i <= MAXSEM; i++) {
-        S.trabalho[i] = K.normTrab(Object.assign({}, cfg, { trabalha: w.trabalha }));
-        if (manuais.length) S.bloqueios[i] = manuais.map(b => ({ ...b })); else delete S.bloqueios[i];
-        if (projetados.has(i)) n++;        // conta só os já visíveis (para a mensagem)
-    }
-    limparEscolhasApos(idx);
-    return n;
-}
 
 /* ---------- Derivação (grafo, ctx) ---------- */
 function derive() {
@@ -259,7 +245,8 @@ function projetar() {
     // a partir de 2026/2 assume-se que as em-andamento foram aprovadas
     cursadas = new Set([...cursadas, ...D.emAndamento]);
 
-    for (let idx = 1; idx <= MAXSEM; idx++) {
+    // Projeta APENAS o semestre-alvo (idx 1). O sem 0 acima entra só para acumular `cursadas`.
+    for (let idx = 1; idx <= 1; idx++) {
         const curIdx = new Set(cursadas);
         const cand = K.candidatasSemestre(D.ctx, curIdx, new Set(), true);
         const faltObrig = new Set(D.matriz.disciplinas.filter(d => !d.isOpcional && !curIdx.has(d.codigo)).map(d => d.codigo));
@@ -377,5 +364,5 @@ function limparEscolhasDesde(idx) { let n = 0; for (const k in S.escolhas) if (+
 function setEstado(v) { S = v; }
 
 export {
-    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, extrasAteSem, cursadasComManuais, formaturaOK, calcHorasIdx, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
+    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, extrasAteSem, cursadasComManuais, formaturaOK, calcHorasIdx, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
 };

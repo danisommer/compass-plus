@@ -5,7 +5,7 @@ import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import Sortable from 'sortablejs';
 import './styles.css';
 import {
-    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, extrasAteSem, cursadasComManuais, formaturaOK, calcHorasIdx, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
+    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, extrasAteSem, cursadasComManuais, formaturaOK, calcHorasIdx, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
 } from './state';
 
 /* ===================================================================
@@ -298,12 +298,11 @@ function blocosSemestreHTML(sem) {
     ${[['inicio', 'No começo (cresce p/ a tarde)'], ['fim', 'No fim (cresce p/ a manhã)'], ['livre', 'Sem preferência']].map(([v, t]) => `<button class="flexlado-opt ${ancora === v ? 'on' : ''}" data-trab-ancora="${v}" data-sem="${idx}"><span class="rb"></span>${t}</button>`).join('')}
     </div></label>` : '';
     const presets = S.trabPresets || [];
-    // Controles de configurações salvas + propagação (só fazem sentido com trabalho ativo).
+    // Controles de configurações salvas (só fazem sentido com trabalho ativo).
     const presetControls = w.trabalha ? `
     <span class="muted" style="font-size:12px">📁 Salvas:</span>
     ${presets.length ? presets.map(p => `<span class="daychip ${mesmaCfgTrab(p.cfg, w) ? 'on' : ''}" data-trab-preset-apply="${p.id}" data-sem="${idx}" data-tip="Clique para aplicar &quot;${esc(p.nome)}&quot; a ${esc(sem.rotulo)}">${esc(p.nome)} <span data-trab-preset-del="${p.id}" data-tip="Excluir esta configuração" style="margin-left:5px;color:var(--secondary);font-weight:700">×</span></span>`).join('') : '<span class="muted" style="font-style:italic">nenhuma</span>'}
-    <button class="btn btn-sm btn-ghost" data-trab-preset-save="${idx}">💾 Salvar atual…</button>
-    <button class="btn btn-sm btn-ghost" data-trab-aplicar-seg="${idx}" data-tip="${temRasc ? 'Aplica as alterações a ESTE semestre e copia o trabalho + bloqueios manuais para os seguintes' : 'Copia este trabalho e os bloqueios manuais para os semestres seguintes (não altera este)'}">📋 ${temRasc ? 'Aplicar p/ este e os seguintes' : 'Aplicar p/ semestres seguintes'}</button>` : '';
+    <button class="btn btn-sm btn-ghost" data-trab-preset-save="${idx}">💾 Salvar atual…</button>` : '';
     const respondido = wSalvo.trabalha !== null && wSalvo.trabalha !== undefined;
     // S5.3 — total de horas fechado (✓ verde) × não fechado (✗ vermelho)
     const fechado = !wSalvo.trabalha || (trab.deficit <= 1e-6 && !trab.conflitosNucleo && !trab.rigidConf);
@@ -657,9 +656,10 @@ function renderGrafo() {
 function renderApp() {
     const al = D.hist.aluno;
     const proj = D.projecao;
-    if (S.abaAtiva >= proj.length) S.abaAtiva = proj.length - 1;
+    // Foco único no semestre-alvo (idx 1 = próximo semestre, o dos dados de oferta inseridos).
+    // É sempre o último elemento de D.projecao ([sem0, semAlvo]); o sem0 (em andamento) não é exibido.
+    S.abaAtiva = proj.length - 1;
     const sem = proj[S.abaAtiva];
-    const restantes = proj.filter(s => s.idx > 0 && !s.formatura).length + (proj.some(s => s.formatura) ? 1 : 0);
     root.innerHTML = `
 <div class="topbar">
 <button class="btn btn-sm btn-ghost" id="toggle-side">☰</button>
@@ -667,7 +667,6 @@ function renderApp() {
 <div class="meta">
     <span class="score-help" data-tip="${SCORE_TIP}">ⓘ Score</span>
     <div class="stat"><b>${(al.coeficienteAbsoluto || 0).toFixed(4)}</b><span>Coef. absoluto</span></div>
-    <div class="stat"><b>${proj.length - 1}</b><span>Semestres projetados</span></div>
     <div class="stat"><b>${D.hist.aluno.periodoAtual}º</b><span>Período atual</span></div>
     <button class="btn btn-sm btn-ghost" data-editar-pref>⚙️ Preferências</button>
     <button class="btn btn-sm btn-ghost" id="ver-grafo">🗺️ Grafo de matérias</button>
@@ -677,7 +676,6 @@ function renderApp() {
 <div class="layout">
 <aside class="sidebar ${S.sidebarCollapsed ? 'collapsed' : ''}" id="sidebar">${sidebarHTML(sem)}</aside>
 <main class="main">
-    <div class="tabs">${proj.map((s, i) => tabHTML(s, i)).join('')}</div>
     ${semestreHTML(sem)}
 </main>
 </div>`;
@@ -778,47 +776,23 @@ ${(() => {
         })()}`;
 }
 
-function tabHTML(s, i) {
-    const st = s.formatura ? 'formatura' : s.cursoImpossivel ? 'impossivel' : s.quaseFormatura ? 'quase' : s.status;
-    const lbl = s.formatura ? '🎓 Formatura'
-        : s.cursoImpossivel ? '⛔ Sem solução'
-            : s.quaseFormatura ? '🟠 Quase lá'
-                : s.status === 'atual' ? 'atual'
-                    : s.status === 'confirmado' ? 'confirmado ✓' : 'futuro (est.)';
-    return `<button class="tab ${st} ${i === S.abaAtiva ? 'active' : ''}" data-tab="${i}">
-<span class="ttl">${s.rotulo}</span><span class="tst">${lbl}</span></button>`;
-}
-
 function semestreHTML(sem) {
-    if (sem.idx === 0) return semAtualHTML(sem);
     if (sem.formatura) return formaturaHTML(sem) + planoSemestreHTML(sem);
     if (sem.cursoImpossivel) return impossivelHTML(sem) + planoSemestreHTML(sem);
     if (sem.quaseFormatura) return quaseFormaturaHTML(sem) + planoSemestreHTML(sem);
     return planoSemestreHTML(sem);
 }
 
-function semAtualHTML(sem) {
-    const sel = sem.grade.sel;
-    return `
-<div class="sem-head"><h2>${sem.rotulo} — Semestre atual</h2><span class="chip" style="color:var(--secondary)">Em andamento</span></div>
-<div class="banner info">ℹ️ Estas são suas disciplinas matriculadas em ${sem.rotulo} (histórico). Elas aparecem como <b>em andamento</b> e não são editáveis. A projeção dos próximos semestres assume que serão aprovadas.</div>
-<div class="gcard open"><div class="gh"><div><div class="gtitle">Disciplinas em andamento</div><div class="gsub">${sel.length} disciplinas · ${sel.reduce((a, s) => a + (s.disciplina.chSemanal || 0), 0)} aulas/sem</div></div></div>
-<div class="gbody">${sel.map(s => discRowHTML(s)).join('')}</div></div>
-${calendarHTML(sem, sel)}
-${legendaHTML()}`;
-}
-
 function planoSemestreHTML(sem) {
     const escolhida = sem.grade;
     const banners = [];
-    if (sem.status !== 'confirmado') banners.push(`<div class="banner warn">⚠ Grade estimada — sem dados reais de oferta para ${sem.rotulo}. Baseada nas Turmas Abertas 2026/1.</div>`);
     // rascunho banner
     const blocos = sem.bloqueios || [];
     const rasc = escolhida.sel.filter(s => s.bloqueado);
     rasc.forEach(s => {
         const blkSlots = s.horarios.filter(h => blocos.some(b => b.diaSemana === h.diaSemana && b.periodo === h.periodo && b.slot === h.slot));
         const nomesBlk = [...new Set(blkSlots.map(h => { const b = blocos.find(b => b.diaSemana === h.diaSemana && b.periodo === h.periodo && b.slot === h.slot); return b ? b.nome : ''; }))].join(', ');
-        banners.push(`<div class="banner warn">⚠ <b>“${esc(s.disciplina.nome)}”</b> ocupa o horário travado <b>${esc(nomesBlk)}</b> em ${sem.rotulo}. Resolva o conflito para que ela conte nos próximos semestres.
+        banners.push(`<div class="banner warn">⚠ <b>“${esc(s.disciplina.nome)}”</b> ocupa o horário travado <b>${esc(nomesBlk)}</b> em ${sem.rotulo}. Resolva o conflito para que ela entre na sua grade.
     <span class="b-actions"><button class="btn btn-sm btn-ghost" data-rm-rasc="${s.disciplina.codigo}">Remover da grade</button><button class="btn btn-sm btn-ghost" data-abrir-blocos="${sem.idx}">Editar bloqueio</button></span></div>`);
     });
     // trabalho: conflito de núcleo / déficit semanal na grade escolhida
@@ -834,7 +808,7 @@ function planoSemestreHTML(sem) {
     const temGrades = sem.grades && sem.grades.length;
     const headAcoes = sem.status === 'confirmado'
         ? `<span class="chip" style="color:var(--success)">confirmado ✓</span> <button class="btn btn-sm btn-ghost" data-desconfirmar="${sem.idx}">Refazer</button>`
-        : `<span class="chip">futuro estimado</span>${temGrades ? ` <button class="btn btn-sm btn-primary" data-escolher="${sem.recKey == null ? 0 : sem.recKey}">✓ Confirmar grade sugerida</button>` : ''}`;
+        : `${temGrades ? `<button class="btn btn-sm btn-primary" data-escolher="${sem.recKey == null ? 0 : sem.recKey}">✓ Confirmar grade sugerida</button>` : ''}`;
     // cronograma: durante a edição mostra a grade em edição (prévia ao vivo); senão, a grade ativa
     const calSel = editorAberto ? editorSel(sem) : escolhida.sel;
     const calSem = editorAberto ? Object.assign({}, sem, { trab: trabCalc(sem.idx, calSel) }) : sem;
@@ -1164,16 +1138,6 @@ async function onClick(e) {
     const tapl = t.closest('[data-trab-aplicar]'); if (tapl) { const i = +tapl.dataset.trabAplicar; const a = trabAplicarRascunho(i); const b = bloqAplicarRascunho(i); if (a || b) limparEscolhasDesde(i); toast('Horários travados aplicados · grades recalculadas'); rerenderKeepOpen(); return; }
     // Descartar rascunho -> restaura trabalho E bloqueios salvos
     const tdes = t.closest('[data-trab-descartar]'); if (tdes) { const i = +tdes.dataset.trabDescartar; trabDescartarRascunho(i); bloqDescartarRascunho(i); salvar(); rerenderKeepOpen(); return; }
-    const tas = t.closest('[data-trab-aplicar-seg]'); if (tas) {
-        const i = +tas.dataset.trabAplicarSeg;
-        const temRasc = trabTemRascunho(i) || bloqTemRascunho(i);
-        if (temRasc) { trabAplicarRascunho(i); bloqAplicarRascunho(i); limparEscolhasDesde(i); }   // aplica também a ESTE semestre
-        const n = aplicarTrabSeguintes(i);                                                          // copia config salva aos seguintes
-        toast(temRasc
-            ? (n ? `Aplicado a este e a ${n} semestre(s) seguinte(s)` : 'Aplicado a este semestre')
-            : (n ? `Aplicado a ${n} semestre(s) seguinte(s)` : 'Não há semestres seguintes'));
-        rerenderKeepOpen(); return;
-    }
     const pdel = t.closest('[data-trab-preset-del]'); if (pdel) { const p = (S.trabPresets || []).find(p => p.id === pdel.dataset.trabPresetDel); if (p && confirm(`Excluir a configuração de trabalho "${p.nome}"?`)) excluirPresetTrab(pdel.dataset.trabPresetDel); rerenderKeepOpen(); return; }
     const papp = t.closest('[data-trab-preset-apply]'); if (papp) { const i = +papp.dataset.sem; const p = (S.trabPresets || []).find(x => x.id === papp.dataset.trabPresetApply); if (p) { trabRascunhoSet(i, Object.assign({}, p.cfg, { trabalha: true })); toast('Configuração carregada no rascunho — clique em Aplicar'); } rerenderKeepOpen(); return; }
     const psav = t.closest('[data-trab-preset-save]'); if (psav) { const i = +psav.dataset.trabPresetSave; const nome = (prompt('Nome desta configuração de trabalho (ex.: "Meio período", "Integral"):', '') || '').trim(); if (nome) { salvarPresetTrab(i, nome); toast('Configuração salva'); } rerenderKeepOpen(); return; }
@@ -1194,7 +1158,6 @@ async function onClick(e) {
     // app
     if (t.closest('#toggle-side')) { S.sidebarCollapsed = !S.sidebarCollapsed; $('#sidebar').classList.toggle('collapsed'); return; }
     if (t.closest('#reiniciar')) { if (confirm('Reiniciar tudo? Isso apaga o estado salvo e volta para a tela de upload.\n(Suas configurações de trabalho salvas são mantidas.)')) { localStorage.removeItem('compass_state'); setEstado(novoEstado()); hidratarPresets(); salvar(); render(); } return; }
-    const tab = t.closest('[data-tab]'); if (tab) { S.abaAtiva = +tab.dataset.tab; salvar(); render(); return; }
     const tc = t.closest('[data-toggle-card]'); if (tc) { tc.closest('.gcard').classList.toggle('open'); return; }
     const ch = t.closest('[data-escolher]'); if (ch) return escolherGrade(ch.dataset.escolher);
     const rr = t.closest('[data-rm-rasc]'); if (rr) return removerRascunho(rr.dataset.rmRasc);
