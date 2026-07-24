@@ -851,7 +851,7 @@ function gradeCardHTML(g, i, sem, custom, isRec, isSel) {
     ${g.sel.map(s => discRowHTML(s, sem)).join('')}
     <div class="gactions">
     ${sel ? '<span class="chip" style="color:var(--success)">✓ Grade escolhida</span>' : `<button class="btn btn-sm btn-primary" data-escolher="${i}">Escolher esta grade</button>`}
-    <button class="btn btn-sm btn-ghost" data-copiar-grade="${i}" data-sem="${sem.idx}" data-tip="Copiar a grade como extrato (código — turma)">📋 Copiar</button>
+    <button class="btn btn-sm btn-ghost" data-copiar-grade="${i}" data-sem="${sem.idx}" data-tip="Copiar como texto: extrato da grade (código — turma) + horário de trabalho">📋 Copiar</button>
     <button class="btn btn-sm btn-ghost" data-editar="${i}" data-sem="${sem.idx}">✏️ Editar</button>
     ${custom ? `<button class="btn btn-sm btn-ghost" data-del-custom="${String(i).slice(1)}" data-sem="${sem.idx}" title="Excluir esta grade personalizada">🗑</button>` : ''}
     </div>
@@ -875,6 +875,20 @@ function gradeSelecionadaKey(sem) {
 }
 // extrato de uma grade: "- CÓDIGO — TURMA" por linha (formato para copiar/colar)
 function extratoGrade(g) { return g.sel.map(s => `- ${s.disciplina.codigo} — ${s.turma ? s.turma.turma : '—'}`).join('\n'); }
+// hora "amigável": 540 → "9h", 810 → "13h30"
+function fmtHoraCurta(min) { const h = Math.floor(min / 60), m = Math.round(min % 60); return m ? `${h}h${String(m).padStart(2, '0')}` : `${h}h`; }
+function hhmmParaMin(s) { const m = String(s).match(/(\d{1,2})[:h](\d{2})/); return m ? (+m[1]) * 60 + (+m[2]) : 0; }
+// extrato do horário de trabalho para ESTA grade (o flexível se molda à grade escolhida).
+// '' quando não trabalha no semestre. Fixo → uma linha; flexível → intervalos por dia.
+function extratoTrabalho(sem, g) {
+    const w = K.normTrab(trabDoSem(sem.idx));
+    if (!w.trabalha || !(+w.horas > 0)) return '';
+    if (w.modo === 'fixo') return `Trabalho: das ${fmtHoraCurta(hhmmParaMin(w.inicio))} às ${fmtHoraCurta(hhmmParaMin(w.fim))}`;
+    const dn = { 2: 'seg', 3: 'ter', 4: 'qua', 5: 'qui', 6: 'sex' };
+    const iv = (trabCalc(sem.idx, g.sel) || {}).intervalos || {};
+    const dias = K.DIAS_UTEIS.map(d => iv[d] ? `${dn[d]} ${fmtHoraCurta(iv[d].startMin)} - ${fmtHoraCurta(iv[d].endMin)}` : null).filter(Boolean);
+    return dias.length ? `Trabalho: ${dias.join(' · ')}` : 'Trabalho: não encaixou nesta grade';
+}
 
 function discRowHTML(s, sem?) {
     const d = s.disciplina; const tp = tipoDe(d);
@@ -1325,8 +1339,11 @@ async function copiarGrade(i, semIdx) {
     const sem = D.projecao.find(s => s.idx === semIdx) || D.projecao[S.abaAtiva]; if (!sem) return;
     const g = String(i).startsWith('p') ? (sem.personalizadas || [])[+String(i).slice(1)] : sem.grades[+i];
     if (!g || !g.sel || !g.sel.length) { toast('Grade vazia — nada a copiar'); return; }
-    const ok = await copiarTexto(extratoGrade(g));
-    toast(ok ? `Grade copiada (${g.sel.length} disciplinas)` : 'Não foi possível copiar');
+    const partes = [extratoGrade(g)];
+    const trab = extratoTrabalho(sem, g);
+    if (trab) partes.push('', trab);   // linha em branco separando a grade do horário de trabalho
+    const ok = await copiarTexto(partes.join('\n'));
+    toast(ok ? `Grade copiada${trab ? ' + trabalho' : ''} (${g.sel.length} disciplinas)` : 'Não foi possível copiar');
 }
 function removerRascunho(cod) {
     const sem = D.projecao[S.abaAtiva];
