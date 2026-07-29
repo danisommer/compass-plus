@@ -2054,10 +2054,6 @@ input[type=range]::-webkit-slider-thumb {
     font-size: 15px
 }
 
-.prefs-panel .personalize {
-    margin-top: 16px
-}
-
 /* ---- Editor de grade ---- */
 .gcard.montar {
     border: 2px dashed var(--line);
