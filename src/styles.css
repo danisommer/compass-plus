@@ -2040,6 +2040,24 @@ input[type=range]::-webkit-slider-thumb {
     margin-top: 5px
 }
 
+/* ---- Slide-over de Preferências (dentro do app) ---- */
+.prefs-panel .pref-grid {
+    grid-template-columns: 1fr;
+    /* coluna única: o painel é estreito */
+    gap: 14px;
+    margin-top: 0
+}
+
+.prefs-panel .card h3 {
+    /* mantém o título do card com a cor de texto normal (não a cor de .ajuda-body h3) */
+    color: var(--text);
+    font-size: 15px
+}
+
+.prefs-panel .personalize {
+    margin-top: 16px
+}
+
 /* ---- Editor de grade ---- */
 .gcard.montar {
     border: 2px dashed var(--line);

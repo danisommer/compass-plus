@@ -80,7 +80,7 @@ function abrirAjuda() {
     requestAnimationFrame(() => ov.classList.add('on'));
 }
 function fecharAjuda() { const ov = document.getElementById('ajuda-ov'); if (ov) { ov.classList.remove('on'); setTimeout(() => ov.remove(), 260); } }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharAjuda(); });
+document.addEventListener('keydown', e => { if (e.key !== 'Escape') return; fecharAjuda(); if (S.prefsOpen) { S.prefsOpen = false; salvar(); render(); } });
 
 /* ---------- Extração via PDF.js ---------- */
 async function extrairPaginas(file, onProg?) {
@@ -178,16 +178,12 @@ function renderDivergencias() {
 }
 
 /* ---------- Preferências (Módulo 2) ---------- */
-function renderPreferencias() {
-    const p = S.preferencias;
-    const m = S.parsed.matriz;
-    const subareas = m.resumo.conjuntosOptativos.find(c => c.id === '1160');
+// cards de preferências (campus, turnos, carga, trilhas) — reutilizados na tela de onboarding
+// e no slide-over de preferências dentro do app.
+function prefsGridHTML(p) {
     if (!p.preferenciaTrilhas.length) p.preferenciaTrilhas = Object.keys(K.TRILHA_SUBAREAS);
     const trilhas = p.preferenciaTrilhas;
-    root.innerHTML = `
-<div class="pref-screen">
-<div class="brand"><div class="logo">C+</div><div><h1>Preferências</h1><div class="muted" style="font-size:13px">Ajuste antes de calcular as grades. Você pode alterar depois na barra lateral.</div></div></div>
-<div class="pref-grid">
+    return `<div class="pref-grid">
     <div class="card">
     <h3>🏫 Campus</h3>
     <div class="spread"><span>Restringir a um único campus</span><div class="toggle ${p.campusUnico ? 'on' : ''}" data-pref="campusUnico"><i></i></div></div>
@@ -216,13 +212,45 @@ function renderPreferencias() {
         ${trilhas.map((id, i) => `<li data-id="${id}"><span class="rank">${i + 1}</span><span>${esc(K.TRILHA_SUBAREAS[id])}</span><span class="mono muted" style="font-size:11px">[${id}]</span><span class="grip">⋮⋮</span></li>`).join('')}
     </ul>
     </div>
+</div>`;
+}
+function renderPreferencias() {
+    // Semestre-alvo (idx 1) leve, só para o formulário de horários travados — sem precisar do projetar()
+    // completo. O trabalho é previsto sobre uma grade vazia; após "Calcular grades" ele se molda à grade.
+    const sem = { idx: 1, rotulo: rotuloSem(1), bloqueios: manualBlocos(1), trab: trabCalc(1, []) };
+    const trabOK = trabRespondido(1);   // preenchimento obrigatório: precisa ter respondido (e aplicado)
+    root.innerHTML = `
+<div class="pref-screen">
+<div class="brand"><div class="logo">C+</div><div><h1>Preferências</h1><div class="muted" style="font-size:13px">Ajuste antes de calcular as grades. Você pode alterar depois na barra lateral.</div></div></div>
+${prefsGridHTML(S.preferencias)}
+<div class="pref-trab">
+    <h2 style="font-size:16px;margin:26px 0 4px">🔒 Horários travados <span class="chip" style="color:var(--secondary)">obrigatório</span></h2>
+    <p class="muted" style="font-size:13px;margin:0 0 4px">Informe se você trabalha neste semestre (e o horário). As grades são calculadas ao redor disso. Depois, você edita no plano do semestre.</p>
+    ${blocosSemestreHTML(sem, true)}
 </div>
-<div class="actions" style="margin-top:22px;display:flex;gap:12px">
-    <button class="btn btn-primary" id="ir-app">Calcular grades →</button>
+<div class="actions" style="margin-top:22px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+    <button class="btn btn-primary" id="ir-app" ${trabOK ? '' : 'disabled data-tip="Responda sobre seu trabalho em &quot;Horários travados&quot; e clique em Aplicar"'}>Calcular grades →</button>
     <button class="btn btn-ghost" id="voltar-upload">← Voltar</button>
+    ${trabOK ? '' : '<span class="muted" style="color:var(--secondary);font-size:12px">⚠ Responda sobre seu trabalho acima (e clique em <b>Aplicar</b>) para continuar.</span>'}
 </div>
 </div>`;
     initTrilhasDrag();
+}
+// slide-over de Preferências (dentro do app) — campus, turnos, carga e trilhas.
+// Renderizado dentro de #root para que a delegação de eventos e os rerenders funcionem sem navegar
+// para fora do planejamento (fecha e volta exatamente pra cá). Os horários travados NÃO ficam aqui:
+// eles são preenchidos (obrigatoriamente) no primeiro carregamento e depois editados no plano.
+function prefsOverlayHTML() {
+    return `<div class="ajuda-ov on" id="prefs-ov">
+<div class="ajuda-backdrop" data-fechar-prefs></div>
+<aside class="ajuda-panel prefs-panel" role="dialog" aria-label="Preferências">
+    <header class="ajuda-head"><h2>⚙️ Preferências</h2><button class="btn btn-sm btn-ghost" data-fechar-prefs aria-label="Fechar">✕</button></header>
+    <div class="ajuda-body">
+        ${prefsGridHTML(S.preferencias)}
+        <div class="actions" style="margin-top:18px"><button class="btn btn-primary" data-fechar-prefs>✓ Concluir</button></div>
+    </div>
+</aside>
+</div>`;
 }
 
 function blockGridHTML(sem) {
@@ -253,7 +281,7 @@ function blockGridHTML(sem) {
     });
     return `<div class="cal-wrap"><table class="blockgrid"><thead><tr><th></th>${[2, 3, 4, 5, 6, 7].map(d => `<th>${K.DIAS[d].slice(0, 3)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
-function blocosSemestreHTML(sem) {
+function blocosSemestreHTML(sem, forceOpen?) {
     const idx = sem.idx;
     // pendências = trabalho OU bloqueios manuais com alterações não aplicadas
     const temRasc = trabTemRascunho(idx) || bloqTemRascunho(idx);
@@ -323,7 +351,7 @@ function blocosSemestreHTML(sem) {
     <button class="btn btn-sm btn-primary" data-trab-aplicar="${idx}" ${temRasc ? '' : 'disabled'} data-tip="${temRasc ? 'Aplica as alterações e recalcula as grades' : 'Sem alterações pendentes para aplicar'}">✔ Aplicar</button>
     </div>
 </div>`;
-    return `<details class="personalize" id="blocos-${idx}" ${!respondido ? 'open' : ''} style="margin-top:14px">
+    return `<details class="personalize" id="blocos-${idx}" ${(forceOpen || !respondido) ? 'open' : ''} style="margin-top:14px">
 <summary>🔒 Horários travados de ${esc(sem.rotulo)} ${indicativo} <span class="muted" style="font-weight:400;font-size:12px">— ${nMan} manual${nMan === 1 ? '' : 'is'}${wSalvo.trabalha ? ` + trabalho` : ''}</span></summary>
 <div class="work-form">
     <label style="gap:10px"><span style="color:var(--text);font-weight:600">💼 Você trabalha neste semestre?</span>
@@ -678,7 +706,9 @@ function renderApp() {
 <main class="main">
     ${semestreHTML(sem)}
 </main>
-</div>`;
+</div>
+${S.prefsOpen ? prefsOverlayHTML() : ''}`;
+    if (S.prefsOpen) initTrilhasDrag();   // Sortable precisa reanexar ao <ul> recriado
 }
 
 function sidebarHTML(sem) {
@@ -1159,10 +1189,10 @@ async function onClick(e) {
     const dv = t.closest('[data-div]');
     if (dv) { const d = S.divergPendentes.shift(); if (dv.dataset.div === 'yes') S.equivalencias[d.gnhCod] = d.matrizCod; salvar(); render(); return; }
 
-    // preferências
-    const pr = t.closest('[data-pref]'); if (pr) { S.preferencias.campusUnico = !S.preferencias.campusUnico; salvar(); renderPreferencias(); return; }
-    const cs = t.closest('[data-campus]'); if (cs) { S.preferencias.campus = cs.dataset.campus; salvar(); renderPreferencias(); return; }
-    const tu = t.closest('[data-turno]'); if (tu) { const k = tu.dataset.turno; const a = S.preferencias.turnos; const i = a.indexOf(k); if (i >= 0) { if (a.length > 1) a.splice(i, 1); } else a.push(k); salvar(); renderPreferencias(); return; }
+    // preferências (mesmos controles na tela de onboarding e no slide-over dentro do app)
+    const pr = t.closest('[data-pref]'); if (pr) { S.preferencias.campusUnico = !S.preferencias.campusUnico; refreshPrefs(); return; }
+    const cs = t.closest('[data-campus]'); if (cs) { S.preferencias.campus = cs.dataset.campus; refreshPrefs(); return; }
+    const tu = t.closest('[data-turno]'); if (tu) { const k = tu.dataset.turno; const a = S.preferencias.turnos; const i = a.indexOf(k); if (i >= 0) { if (a.length > 1) a.splice(i, 1); } else a.push(k); refreshPrefs(); return; }
     // Trabalho: Sim/Não e Flex escrevem no rascunho; só "Aplicar" dispara o recálculo
     const tsim = t.closest('[data-trab-sim]'); if (tsim) { const i = +tsim.dataset.trabSim; trabRascunhoSet(i, { trabalha: true }); salvar(); rerenderKeepOpen(); return; }
     const tnao = t.closest('[data-trab-nao]'); if (tnao) { const i = +tnao.dataset.trabNao; trabRascunhoSet(i, { trabalha: false }); salvar(); rerenderKeepOpen(); return; }
@@ -1177,9 +1207,21 @@ async function onClick(e) {
     const papp = t.closest('[data-trab-preset-apply]'); if (papp) { const i = +papp.dataset.sem; const p = (S.trabPresets || []).find(x => x.id === papp.dataset.trabPresetApply); if (p) { trabRascunhoSet(i, Object.assign({}, p.cfg, { trabalha: true })); toast('Configuração carregada no rascunho — clique em Aplicar'); } rerenderKeepOpen(); return; }
     const psav = t.closest('[data-trab-preset-save]'); if (psav) { const i = +psav.dataset.trabPresetSave; const nome = (prompt('Nome desta configuração de trabalho (ex.: "Meio período", "Integral"):', '') || '').trim(); if (nome) { salvarPresetTrab(i, nome); toast('Configuração salva'); } rerenderKeepOpen(); return; }
     // bloqueio por clique tratado no mousedown/mouseup (suporta arrastar)
-    if (t.closest('#ir-app')) { if (!S.preferencias.turnos.length) { toast('Selecione ao menos um turno'); return; } S.fase = 'app'; S.abaAtiva = 1; salvar(); render(); return; }
+    if (t.closest('#ir-app')) {
+        if (!S.preferencias.turnos.length) { toast('Selecione ao menos um turno'); return; }
+        if (!trabRespondido(1)) {   // preenchimento obrigatório dos horários travados
+            toast('Responda sobre seu trabalho neste semestre (e clique em Aplicar) para continuar');
+            const el = document.getElementById('blocos-1') as HTMLDetailsElement | null;
+            if (el) { el.open = true; el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+            return;
+        }
+        S.fase = 'app'; S.abaAtiva = 1; salvar(); render(); return;
+    }
     if (t.closest('#voltar-upload')) { S.fase = 'upload'; render(); return; }
-    if (t.closest('[data-editar-pref]')) { S.fase = 'preferencias'; render(); return; }
+    // Preferências no app = slide-over (sem sair do planejamento). Fora do app (onboarding),
+    // cai na tela cheia de preferências.
+    if (t.closest('[data-editar-pref]')) { if (S.fase === 'app') { S.prefsOpen = true; render(); } else { S.fase = 'preferencias'; render(); } return; }
+    if (t.closest('[data-fechar-prefs]')) { S.prefsOpen = false; salvar(); render(); return; }
 
     // grafo de matérias
     if (t.closest('#ver-grafo')) { S.fase = 'grafo'; salvar(); render(); return; }
@@ -1272,6 +1314,9 @@ function rerenderKeepOpen() {
     if (S.fase === 'app') { const open = new Set($$('details.personalize[open]').map(e => e.id)); render(); open.forEach(id => { const e = document.getElementById(id) as HTMLDetailsElement | null; if (e) e.open = true; }); }
     else render();
 }
+// re-render após mudar uma preferência: no app mantém o slide-over aberto (e o form de trabalho
+// expandido, via rerenderKeepOpen); no onboarding, re-renderiza a tela cheia de preferências.
+function refreshPrefs() { salvar(); if (S.fase === 'app') rerenderKeepOpen(); else renderPreferencias(); }
 
 /* ---- arrastar p/ bloquear (vertical, mesmo dia) ---- */
 let drag = null;
@@ -1473,6 +1518,7 @@ document.addEventListener('drop', e => {
     else if (saved && saved.parsed && saved.parsed.matriz) { setEstado(saved); }
     else setEstado(novoEstado());
     hidratarPresets();                                   // configs de trabalho salvas (chave dedicada)
+    S.prefsOpen = false;                                 // estado de UI transitório: nunca abre o menu ao restaurar
     // se restaurou em fase app, ok; senão começa upload
     if (!S.parsed || !S.parsed.matriz) S.fase = 'upload';
     render();

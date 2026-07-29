@@ -14,7 +14,7 @@ function novoEstado() {
         equivalencias: {}, divergPendentes: [], preferencias: structuredClone(DEFAULT_PREF), bloqueios: {}, trabalho: {}, trabPresets: [],
         trabRascunho: {}, bloqRascunho: {},
         escolhas: {}, custom: {}, editor: null, manuais: { estagios: {}, eletiva: { porSem: {} }, extensao: { porSem: {} }, enade: { done: false, sem: null } },
-        abaAtiva: 0, sidebarCollapsed: false
+        abaAtiva: 0, sidebarCollapsed: false, prefsOpen: false
     };
 }
 function salvar() { try { const c = structuredClone(S); delete c.files; delete c.trabPresets; localStorage.setItem('compass_state', JSON.stringify(c)); salvarPresets(); } catch (e) { console.warn(e); } }
