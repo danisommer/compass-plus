@@ -1,15 +1,17 @@
-name: Deploy to GitHub Pages
+name: Deploy
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  # Permite disparar o deploy manualmente pela aba Actions
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
 
+# Um deploy por vez; cancela builds antigos ainda na fila
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -17,7 +19,6 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -26,22 +27,27 @@ jobs:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      - name: Instalar dependências
+        run: npm ci
 
-      - run: npm run build
+      - name: Checagem de tipos
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
 
   deploy:
+    needs: build
+    runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
-
-    needs: build
-    runs-on: ubuntu-latest
-
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
