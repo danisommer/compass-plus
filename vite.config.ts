@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
+import compassLog from './vite-plugin-compass-log';
 
 export default defineConfig({
+  plugins: [compassLog()],
   // Em GitHub Pages de projeto o site fica em /<nome-do-repo>/.
   // Derivamos de GITHUB_REPOSITORY (definido no CI) para não depender de um
   // nome fixo; localmente cai em '/'.

@@ -1,4 +1,5 @@
 import K from './engine';
+import { log, registrarEstado, descreverErro } from './log';
 
 /* ---------- Estado ---------- */
 const DEFAULT_PREF = { campusUnico: false, campus: 'CURITIBA', turnos: ['M', 'T', 'N'], cargaMin: 4, cargaMax: 7, preferenciaTrilhas: [], eletivaManual: 0 };
@@ -15,7 +16,11 @@ function novoEstado() {
         abaAtiva: 0, sidebarCollapsed: false, prefsOpen: false
     };
 }
-function salvar() { try { const c = structuredClone(S); delete c.files; delete c.trabPresets; localStorage.setItem('compass_state', JSON.stringify(c)); salvarPresets(); } catch (e) { console.warn(e); } }
+function salvar() {
+    try { const c = structuredClone(S); delete c.files; delete c.trabPresets; localStorage.setItem('compass_state', JSON.stringify(c)); salvarPresets(); }
+    catch (e) { console.warn(e); log('estado.salvar.falha', descreverErro(e), 'error'); }
+    registrarEstado(S);
+}
 function carregar() {
     try {
         const r = localStorage.getItem('compass_state'); if (!r) return null; const o = JSON.parse(r); o.files = { matriz: null, historico: null, gnh: null }; if (Array.isArray(o.bloqueios)) o.bloqueios = {}; if (!o.trabalho) o.trabalho = {}; if (!Array.isArray(o.trabPresets)) o.trabPresets = []; if (!o.trabRascunho) o.trabRascunho = {}; if (!o.bloqRascunho) o.bloqRascunho = {};
@@ -27,12 +32,12 @@ function carregar() {
             if (!it.porSem) { it.porSem = {}; if (+it.h > 0) it.porSem[it.sem == null ? 0 : it.sem] = +it.h; delete it.h; delete it.sem; }
         });
         return o;
-    } catch (e) { return null; }
+    } catch (e) { log('estado.carregar.falha', descreverErro(e), 'error'); return null; }
 }
 // Configurações de trabalho: chave dedicada, durável — sobrevive ao "Reiniciar tudo"
 const PRESETS_KEY = 'compass_trab_presets';
-function salvarPresets() { try { localStorage.setItem(PRESETS_KEY, JSON.stringify(S.trabPresets || [])); } catch (e) { } }
-function carregarPresets() { try { const r = localStorage.getItem(PRESETS_KEY); if (r == null) return null; const a = JSON.parse(r); return Array.isArray(a) ? a.map(p => ({ id: p.id, nome: p.nome, cfg: K.normTrab(p.cfg) })) : []; } catch (e) { return null; } }
+function salvarPresets() { try { localStorage.setItem(PRESETS_KEY, JSON.stringify(S.trabPresets || [])); } catch (e) { log('presets.salvar.falha', descreverErro(e), 'error'); } }
+function carregarPresets() { try { const r = localStorage.getItem(PRESETS_KEY); if (r == null) return null; const a = JSON.parse(r); return Array.isArray(a) ? a.map(p => ({ id: p.id, nome: p.nome, cfg: K.normTrab(p.cfg) })) : []; } catch (e) { log('presets.carregar.falha', descreverErro(e), 'error'); return null; } }
 // popula S.trabPresets a partir da chave dedicada (ou semeia a chave com o que já houver no estado)
 function hidratarPresets() { const dk = carregarPresets(); if (dk !== null) { S.trabPresets = dk; } else { S.trabPresets = S.trabPresets || []; salvarPresets(); } }
 const ORDER = K.ORDEM_SLOTS;                                // [[p,s], ...] ordem vertical
@@ -254,7 +259,33 @@ function semestreTerminal(idx, horas, cursadasSet, term) {
     }, term);
 }
 
+// Resumo de um semestre projetado para o log: o que foi gerado, recomendado, escolhido e o estado terminal.
+function resumoSemestre(s) {
+    const sel = (s.grade && s.grade.sel) || [];
+    return {
+        idx: s.idx, rotulo: s.rotulo, status: s.status,
+        terminal: s.formatura ? 'formatura' : s.cursoImpossivel ? 'impossivel' : s.quaseFormatura ? 'quase' : null,
+        candidatas: (s.candidatas || []).length, grades: (s.grades || []).length, personalizadas: (s.personalizadas || []).length,
+        estourouPrazo: !!s.estourou, recomendada: s.recKey == null ? null : s.recKey,
+        grade: sel.map(x => `${x.disciplina.codigo}/${x.turma ? x.turma.turma : '—'}`),
+        emConflito: sel.filter(x => x.bloqueado).map(x => x.disciplina.codigo),
+        aguardandoTrab: !!s.aguardandoTrab,
+        trabalho: s.trab && s.trab.total ? { horas: s.trab.total, deficit: s.trab.deficit, conflitosNucleo: s.trab.conflitosNucleo } : null,
+        motivosImpossivel: s.motivosImpossivel || null,
+    };
+}
+let ultimaProjecaoLogada = '';
+// Registra a projeção só quando o resultado muda (projetar roda a cada render).
+function registrarProjecao(sems, ms: number) {
+    const semestres = sems.map(resumoSemestre);
+    const chave = JSON.stringify(semestres);
+    if (chave === ultimaProjecaoLogada) return;
+    ultimaProjecaoLogada = chave;
+    log('projecao', { ms, semestres });
+}
+
 function projetar() {
+    const t0 = performance.now();
     const sems = [];
     // Semestre 0 = atual — em andamento, leitura
     const andDiscs = D.emAndamento.map(cod => {
@@ -340,6 +371,7 @@ function projetar() {
         // salvaguarda: mesmo com candidatas úteis nada avançou (tudo bloqueado) → encerra classificando este semestre
         if (!add.length) { Object.assign(sem, classificarTerminal(horas, cursadas, candUteis, idx)); break; }
     }
+    registrarProjecao(sems, Math.round(performance.now() - t0));
     return sems;
 }
 

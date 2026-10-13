@@ -4,6 +4,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import Sortable from 'sortablejs';
 import './styles.css';
+import { log, iniciarLog, registrarEstado, descreverErro } from './log';
 import {
     DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, extrasAteSem, cursadasComManuais, formaturaOK, calcHorasIdx, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
 } from './state';
@@ -1203,7 +1204,23 @@ root.addEventListener('mousedown', onDragStart);
 root.addEventListener('mouseover', onDragOver);
 document.addEventListener('mouseup', onDragEnd);
 
+// Log de ações: o elemento acionado mais próximo com data-* (fora o tooltip) ou um botão/campo com id.
+function registrarAcao(tipo: string, el) {
+    for (; el && el !== root; el = el.parentElement) {
+        const dados = { ...el.dataset }; delete dados.tip;
+        const comId = !!el.id && /^(BUTTON|A|INPUT|SELECT|TEXTAREA)$/.test(el.tagName);
+        if (!Object.keys(dados).length && !comId) continue;
+        log(`acao.${tipo}`, { id: el.id || undefined, dados, valor: valorDoCampo(el), texto: (el.textContent || '').trim().slice(0, 60) || undefined, fase: S.fase, aba: S.abaAtiva });
+        return;
+    }
+}
+function valorDoCampo(el) {
+    if (el.type === 'file') return [...(el.files || [])].map(f => `${f.name} (${f.size} bytes)`);
+    if (el.type === 'checkbox') return el.checked;
+    return /^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName) ? el.value : undefined;
+}
 async function onClick(e) {
+    registrarAcao('clique', e.target);
     const t = e.target;
     if (t.closest('#abrir-ajuda')) return abrirAjuda();
     const pick = t.closest('[data-pick]'); if (pick) { $(`[data-input="${pick.dataset.pick}"]`).click(); return; }
@@ -1302,6 +1319,7 @@ function onInput(e) {
     }
 }
 function onChange(e) {
+    registrarAcao('alteracao', e.target);
     // S11 — horas realizadas de um item acumulativo naquele semestre
     const msn = e.target.closest('[data-manual-sem-num]');
     if (msn) {
@@ -1393,6 +1411,7 @@ function onDragEnd() {
         const nome = prompt('Nome do bloqueio para os horários selecionados:', 'Bloqueio'); if (nome === null) return;
         for (let o = lo; o <= hi; o++) { const [p, s] = ORDER[o]; addBlocoRasc(dr.sem, dr.day, p, s, nome || 'Bloqueio'); }
     }
+    log('acao.bloqueio_rascunho', { sem: dr.sem, dia: dr.day, slots: ORDER.slice(lo, hi + 1).map(([p, s]) => p + s), rascunhoDoDia: bloqEfetivos(dr.sem).filter(b => b.diaSemana === dr.day).map(b => `${b.periodo}${b.slot}:${b.nome}`) });
     rerenderKeepOpen();   // sem recálculo: as grades só mudam no "Aplicar"
 }
 
@@ -1495,7 +1514,7 @@ function atualizarGNH(semIdx) {
     inp.onchange = async () => {
         if (!inp.files[0]) return; toast('Lendo Turmas Abertas…');
         try { const g = await lerTurmas(inp.files[0]); if (!g.length) throw new Error('vazio'); S.parsed.gnh = g; salvar(); toast('Turmas Abertas atualizada com ' + g.length + ' turmas.'); render(); }
-        catch (err) { toast('Falha ao ler o PDF de Turmas Abertas.'); console.error(err); }
+        catch (err) { toast('Falha ao ler o PDF de Turmas Abertas.'); console.error(err); log('pdf.turmas.atualizar.falha', descreverErro(err), 'error'); }
     };
     inp.click();
 }
@@ -1508,23 +1527,31 @@ const ERROS_CONTEUDO_PDF = {
 };
 async function processar() {
     const st = $('#proc-status'); const setp = (m) => { if (st) st.textContent = m; };
+    let tEtapa = performance.now();
+    const decorrido = () => { const agora = performance.now(), ms = Math.round(agora - tEtapa); tEtapa = agora; return ms; };
+    log('pdf.inicio', { arquivos: Object.fromEntries(Object.entries(S.files).map(([k, f]: [string, any]) => [k, f ? `${f.name} (${f.size} bytes)` : null])) });
     try {
         setp('Lendo Matriz Curricular…');
         const mp = await extrairPaginas(S.files.matriz);
         const matriz = K.parseMatriz(mp);
+        log('pdf.matriz', { paginas: mp.length, disciplinas: matriz.disciplinas.length, comPreRequisito: matriz.disciplinas.filter(d => d.preRequisitos.length).length, ms: decorrido() });
         if (!matriz.disciplinas.length) throw new Error('matriz');
         if (!matriz.disciplinas.some(d => d.preRequisitos.length)) throw new Error('matriz-prereq');
         setp('Lendo Histórico Escolar…');
         const hp = await extrairPaginas(S.files.historico);
         const historico = K.parseHistorico(hp);
+        log('pdf.historico', { paginas: hp.length, cursadas: historico.cursadas.length, aprovadas: historico.cursadasAprovadas.length, emAndamento: historico.emAndamento, semestreMatriculadas: historico.semestreMatriculadas, periodo: historico.aluno.periodoAtual, ms: decorrido() });
         if (!historico.aluno.matricula) throw new Error('historico');
         setp('Lendo Turmas Abertas…');
-        let gnh; try { gnh = await lerTurmas(S.files.gnh); } catch (e) { throw new Error('gnh'); }
+        let gnh; try { gnh = await lerTurmas(S.files.gnh); } catch (e) { log('pdf.turmas.excecao', descreverErro(e), 'error'); throw new Error('gnh'); }
+        const presenciais = gnh.filter(t => /Presencial/i.test(t.enquadramento));
+        log('pdf.turmas', { turmas: gnh.length, comHorario: gnh.filter(t => t.horarios.length).length, semOferta: gnh.filter(t => t.semOferta).length, presenciaisSemHorario: presenciais.filter(t => !t.horarios.length).map(t => `${t.codigo}/${t.turma}`), ms: decorrido() });
         if (!gnh.length) throw new Error('gnh');
         if (!gnh.some(t => t.horarios.length)) throw new Error('gnh-horarios');
 
         S.parsed = { matriz, historico, gnh };
         const eqd = K.detectarEquivalencias(matriz, gnh);
+        log('pdf.equivalencias', { automaticas: eqd.auto, divergencias: eqd.divergencias.map(d => `${d.gnhCod}→${d.matrizCod}`) });
         S.equivalencias = { ...eqd.auto };
         S.divergPendentes = eqd.divergencias;
         S.divergTotal = eqd.divergencias.length;
@@ -1533,6 +1560,7 @@ async function processar() {
         S.fase = eqd.divergencias.length ? 'divergencias' : 'preferencias';
         salvar(); render();
     } catch (err) {
+        log('pdf.falha', { codigo: err.message, ...descreverErro(err) }, 'error');
         const nome = err.message === 'matriz' ? 'Matriz Curricular' : err.message === 'historico' ? 'Histórico Escolar' : err.message === 'gnh' ? 'Turmas Abertas' : '';
         setp('');
         alert(ERROS_CONTEUDO_PDF[err.message] || (nome ? `Não foi possível extrair dados de [${nome}]. Verifique se o PDF tem texto selecionável (não é imagem escaneada).` : 'Erro ao processar os arquivos: ' + err.message));
@@ -1568,6 +1596,8 @@ document.addEventListener('drop', e => {
     S.prefsOpen = false;                                 // estado de UI transitório: nunca abre o menu ao restaurar
     // se restaurou em fase app, ok; senão começa upload
     if (!S.parsed || !S.parsed.matriz) S.fase = 'upload';
+    iniciarLog({ fase: S.fase, estadoRestaurado: !!(saved && saved.parsed && saved.parsed.matriz) });
+    registrarEstado(S);
     render();
 })();
 

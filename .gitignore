@@ -5,3 +5,4 @@ alteracoes.md
 node_modules/
 dist/
 *.local
+logs/
