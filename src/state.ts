@@ -4,9 +4,7 @@ import K from './engine';
 const DEFAULT_PREF = { campusUnico: false, campus: 'CURITIBA', turnos: ['M', 'T', 'N'], cargaMin: 4, cargaMax: 7, preferenciaTrilhas: [], eletivaManual: 0 };
 let S: any = null;          // estado persistido
 let D: any = {};            // derivado (não persistido)
-// Foco em UM único semestre: o próximo (idx 1 = 2026/2), o dos dados de oferta inseridos.
-// A projeção multi-semestre foi removida — a otimização "para o futuro" continua embutida na
-// função de score (obrigatórias, fanout, alcance de dependentes futuros).
+const MAXSEM = 14;          // horizonte máximo de semestres projetados
 
 function novoEstado() {
     return {
@@ -71,6 +69,20 @@ function trabAplicarRascunho(idx) {
     return true;
 }
 function trabDescartarRascunho(idx) { if (S.trabRascunho) delete S.trabRascunho[idx]; }
+// Replica trabalho + bloqueios manuais de `idx` em todos os semestres seguintes até MAXSEM
+// (inclusive os ainda não projetados). Retorna quantos desses já estão na projeção.
+function aplicarTrabSeguintes(idx) {
+    const w = K.normTrab(trabDoSem(idx)); const cfg = trabCfgDe(w); const manuais = manualBlocos(idx);
+    const projetados = new Set((D.projecao || []).map(s => s.idx));
+    let n = 0;
+    for (let i = idx + 1; i <= MAXSEM; i++) {
+        S.trabalho[i] = K.normTrab(Object.assign({}, cfg, { trabalha: w.trabalha }));
+        if (manuais.length) S.bloqueios[i] = manuais.map(b => ({ ...b })); else delete S.bloqueios[i];
+        if (projetados.has(i)) n++;
+    }
+    limparEscolhasApos(idx);
+    return n;
+}
 
 /* ---------- Derivação (grafo, ctx) ---------- */
 function derive() {
@@ -107,10 +119,19 @@ function tipoDe(d) {
 }
 
 /* ---------- Projeção dos semestres ---------- */
-function rotuloSem(idx) { // idx 0 = 2026/1, idx 1 = 2026/2, idx 2 = 2027/1 ...
-    const ano = 2026 + Math.floor(idx / 2);
-    const per = (idx % 2) + 1;
-    return `${ano}/${per}`;
+// Semestre letivo do idx 0 (o das matérias matriculadas), deduzido do histórico: o seguinte ao
+// último semestre com resultado (aprovação/reprovação). Sem nenhum resultado, usa a data atual.
+function semestreLetivoAtual() {
+    const regs = ((S.parsed && S.parsed.historico && S.parsed.historico.cursadas) || [])
+        .filter(c => (c.situacao === 'APROVADO' || c.situacao === 'REPROVADO') && c.ano && (c.semestre === 1 || c.semestre === 2));
+    if (!regs.length) { const hoje = new Date(); return { ano: hoje.getFullYear(), per: hoje.getMonth() < 7 ? 1 : 2 }; }
+    const ult = regs.reduce((a, c) => (c.ano * 2 + c.semestre > a.ano * 2 + a.semestre ? c : a));
+    return ult.semestre === 2 ? { ano: ult.ano + 1, per: 1 } : { ano: ult.ano, per: 2 };
+}
+function rotuloSem(idx) { // idx 0 = semestre atual, 1 = o seguinte, ...
+    const base = semestreLetivoAtual();
+    const n = base.ano * 2 + (base.per - 1) + idx;
+    return `${Math.floor(n / 2)}/${(n % 2) + 1}`;
 }
 function manualNoSem(idx) {
     const out = [];
@@ -233,7 +254,7 @@ function semestreTerminal(idx, horas, cursadasSet, term) {
 
 function projetar() {
     const sems = [];
-    // Semestre 0 = atual (2026/1) — em andamento, leitura
+    // Semestre 0 = atual — em andamento, leitura
     const andDiscs = D.emAndamento.map(cod => {
         const reg = D.hist.cursadas.find(c => c.codigo === cod);
         const t = turmaDe(cod, reg && reg.turma);
@@ -242,11 +263,10 @@ function projetar() {
     let cursadas = cursadasComManuais(D.cursadasBase, 0);
     let h0 = calcHorasIdx(cursadas, 0);
     sems.push({ idx: 0, rotulo: rotuloSem(0), status: 'atual', grade: { sel: andDiscs }, grades: [], escolhida: true, horas: h0, candidatas: [], manuais: manualNoSem(0), formatura: false, bloqueios: manualBlocos(0), trab: trabCalc(0, andDiscs) });
-    // a partir de 2026/2 assume-se que as em-andamento foram aprovadas
+    // a partir do semestre seguinte assume-se que as em-andamento foram aprovadas
     cursadas = new Set([...cursadas, ...D.emAndamento]);
 
-    // Projeta APENAS o semestre-alvo (idx 1). O sem 0 acima entra só para acumular `cursadas`.
-    for (let idx = 1; idx <= 1; idx++) {
+    for (let idx = 1; idx <= MAXSEM; idx++) {
         const curIdx = new Set(cursadas);
         const cand = K.candidatasSemestre(D.ctx, curIdx, new Set(), true);
         const faltObrig = new Set(D.matriz.disciplinas.filter(d => !d.isOpcional && !curIdx.has(d.codigo)).map(d => d.codigo));
@@ -364,5 +384,5 @@ function limparEscolhasDesde(idx) { let n = 0; for (const k in S.escolhas) if (+
 function setEstado(v) { S = v; }
 
 export {
-    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, extrasAteSem, cursadasComManuais, formaturaOK, calcHorasIdx, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
+    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, extrasAteSem, cursadasComManuais, formaturaOK, calcHorasIdx, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
 };
