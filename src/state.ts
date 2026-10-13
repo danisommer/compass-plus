@@ -119,10 +119,12 @@ function tipoDe(d) {
 }
 
 /* ---------- Projeção dos semestres ---------- */
-// Semestre letivo do idx 0 (o das matérias matriculadas), deduzido do histórico: o seguinte ao
-// último semestre com resultado (aprovação/reprovação). Sem nenhum resultado, usa a data atual.
+// Semestre letivo do idx 0 (o das matérias matriculadas): o do cabeçalho "Disciplinas Matriculadas" do
+// histórico; sem ele, o seguinte ao último semestre com resultado; sem nenhum resultado, a data atual.
 function semestreLetivoAtual() {
-    const regs = ((S.parsed && S.parsed.historico && S.parsed.historico.cursadas) || [])
+    const hist = S.parsed && S.parsed.historico;
+    if (hist && hist.semestreMatriculadas) return hist.semestreMatriculadas;
+    const regs = ((hist && hist.cursadas) || [])
         .filter(c => (c.situacao === 'APROVADO' || c.situacao === 'REPROVADO') && c.ano && (c.semestre === 1 || c.semestre === 2));
     if (!regs.length) { const hoje = new Date(); return { ano: hoje.getFullYear(), per: hoje.getMonth() < 7 ? 1 : 2 }; }
     const ult = regs.reduce((a, c) => (c.ano * 2 + c.semestre > a.ano * 2 + a.semestre ? c : a));

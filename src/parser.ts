@@ -252,8 +252,10 @@ function parseHistorico(pages) {
         setReg(codigo, sit, { ano, semestre });
     }
 
-    // Matriculadas 2026/1 (CURSANDO)
+    // Matriculadas (CURSANDO) — cabeçalho "Disciplinas Matriculadas - AAAA/S" traz o semestre letivo atual
     const matIdx = texto.findIndex(t => /Matriculadas/.test(t));
+    const mSem = matIdx >= 0 ? texto[matIdx].match(/Matriculadas\s*-\s*(\d{4})\s*\/\s*([12])\b/) : null;
+    const semestreMatriculadas = mSem ? { ano: +mSem[1], per: +mSem[2] } : null;
     if (matIdx >= 0) {
         for (let k = matIdx + 1; k < linhas.length; k++) {
             const toks = linhas[k];
@@ -274,19 +276,47 @@ function parseHistorico(pages) {
     const cursadasAprovadas = cursadas.filter(d => d.situacao === 'APROVADO' || d.situacao === 'CREDITO_CONSIGNADO').map(d => d.codigo);
     const emAndamento = cursadas.filter(d => d.situacao === 'CURSANDO').map(d => d.codigo);
 
-    return { aluno, cursadas, cursadasAprovadas, emAndamento, enadeConcluinte };
+    return { aluno, cursadas, cursadasAprovadas, emAndamento, enadeConcluinte, semestreMatriculadas };
 }
 
 /* ===================================================================
     PARSER 3b — Turmas Abertas (Portal do Aluno) — substitui o Grade na Hora.
-    Tabela por coluna (x): Turma<76 | Enquadr.<160 | Vagas<241 | Reserva<285 |
-    Prioridade<344 | Horário<434 | Professor<490 | Optativa(equivalências).
+    Colunas (Turma | Enquadramento | Vagas… | Reserva | Prioridade | Horário | Professor |
+    Optativa) localizadas pelo cabeçalho de cada tabela, não por posição fixa.
     Saída compatível com a oferta usada no app + prioridadeSI/reserva.
     =================================================================== */
+const COLUNAS_TA = [['turma', /^Turma$/i], ['enq', /^Enquadramento$/i], ['vagas', /^Vagas$/i], ['res', /^Reserva$/i], ['pri', /^Prioridade$/i], ['hor', /^Hor[áa]rio$/i], ['prof', /^Professor$/i], ['opt', /^Optativa$/i]];
+// Início (x) de cada coluna a partir da linha de cabeçalho; null se faltar Turma, Enquadramento ou Horário.
+function colunasDoCabecalho(toks) {
+    const cols = [];
+    for (const tk of toks) { const c = COLUNAS_TA.find(([, re]) => re.test(tk.t)); if (c) cols.push({ key: c[0], ini: tk.x - 3 }); }
+    cols.sort((a, b) => a.ini - b.ini);
+    return ['turma', 'enq', 'hor'].every(k => cols.some(c => c.key === k)) ? cols : null;
+}
+// Coluna em que começa um token de posição x (null se antes da primeira coluna).
+function colunaDe(cols, x) { let k = null; for (const c of cols) { if (x < c.ini) break; k = c.key; } return k; }
+// Distância máxima (pt) acima da linha da turma em que ainda há texto dela (fonte menor de prioridade/professor).
+const ACIMA_DA_TURMA = 6;
 function parseTurmasAbertas(pages) {
     const reDisc = /^[A-Z]{2,5}[0-9][0-9A-Z]{0,2}$/, reTurma = /^[A-Z]{1,2}[0-9]{2,3}$/;
     const ALVO = norm('Sist De Informação');
     const turmas = []; let disc = null;
+    let cols = null, aberta = null, pendentes = [];
+    const montarTurma = t => {
+        const col = { enq: [], res: [], pri: [], hor: [], prof: [], opt: [] };
+        for (const bb of t.bandas) for (const tk of bb.toks) { const k = colunaDe(cols, tk.x); if (col[k]) col[k].push(tk.t); }
+        const jc = a => a.join(' ').replace(/\s+/g, ' ').trim();
+        const enq = jc(col.enq), reserva = jc(col.res), priText = jc(col.pri), horText = col.hor.join(''), prof = tituloCase(jc(col.prof)), optText = jc(col.opt);
+        const prios = []; const re = /(\d+)\s*-\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .]*?)(?=\s+\d+\s*-\s*|$)/g; let mp;
+        while ((mp = re.exec(priText))) prios.push({ rank: +mp[1], curso: mp[2].replace(/\s+/g, ' ').trim() });
+        let prioridadeSI = null; for (const p of prios) { const n = norm(p.curso); if (n === ALVO || n.startsWith('SIST DE INFORM')) { prioridadeSI = p.rank; break; } }
+        const horarios = [], seen = new Set(); let campus = 'CURITIBA';
+        const sr = /(\d)([MTN])(\d)\((\*{0,2})([A-Za-z0-9-]+)\)/g; let sm;
+        while ((sm = sr.exec(horText))) { const dia = +sm[1], per = sm[2], slot = +sm[3], ast = sm[4], sala = sm[5]; if (ast) campus = ast === '**' ? 'NEOVILLE' : 'ECOVILLE'; const key = dia + per + slot; if (seen.has(key)) continue; seen.add(key); horarios.push({ diaSemana: dia, periodo: per, slot, sala }); }
+        const elegivel = !/fechada/i.test(reserva) || prioridadeSI != null;   // pode cursar? (Fechada exige SI na prioridade)
+        return { codigo: t.disc.codigo, nome: t.disc.nome, turma: t.codigo, professor: prof, aulasSem: t.disc.aulas, horarios, campus, enquadramento: enq, reserva, prioridadeSI, prioridades: prios, elegivel, optativaMatrizes: (optText.match(/Matriz:\d+/g) || []) };
+    };
+    const fecharTurma = () => { if (aberta) { aberta.bandas.push(...pendentes); turmas.push(montarTurma(aberta)); } aberta = null; pendentes = []; };
     // O código da disciplina pode vir fragmentado em vários spans no PDF (ex.: "ICS" "X" "20"
     // para "Trabalho de Integração"). Reconstrói o código juntando os tokens iniciais da 1ª
     // coluna até casar reDisc; retorna {code, n} (n = nº de tokens consumidos).
@@ -307,46 +337,27 @@ function parseTurmasAbertas(pages) {
                 // prefixa o código já reconstruído para que o m2 case mesmo com código fragmentado
                 let full = lc.code + ' ' + b.toks.slice(lc.n).map(t => t.t).join(' '), j = bi;
                 while (!/horas semestrais|extensionistas\)/i.test(full) && j + 1 < bands.length && j - bi < 4) { j++; full += ' ' + jb(j); }
-                const m2 = full.match(/^([A-Z]{2,5}[0-9][0-9A-Z]{0,2})\s*[-–]\s*(.+?)\s*\(([\d.,]+)\s*Aulas semanais presenciais/i);
+                const m2 = full.match(/^([A-Z]{2,5}[0-9][0-9A-Z]{0,2})\s*[-–]\s*(.+?)\s*\(([\d.,]+)\s*Aulas semanais/i);
                 if (m2) {
+                    fecharTurma();
                     const extM = full.match(/([\d.,]+)\s*horas semestrais/i);
                     disc = { codigo: m2[1], nome: tituloCase(m2[2].replace(/\s+/g, ' ').trim()), aulas: Math.round(parseFloat(m2[3].replace(',', '.')) || 0), chExt: extM ? Math.round(parseFloat(extM[1].replace(',', '.')) || 0) : 0 };
                     discsVistas.set(disc.codigo, disc);
                     bi = j; continue;
                 }
             }
-            if (/^Turma\b/.test(joined) && /Enquadramento/.test(joined)) continue;   // cabeçalho da tabela
-            const isTurma = first.x < 76 && reTurma.test(first.t) && b.toks.some(t => t.x >= 76 && t.x < 160);
-            if (isTurma && disc) {
-                const blockBands = [b]; let k = bi + 1;
-                for (; k < bands.length; k++) {
-                    const nb = bands[k], nf = nb.toks[0], nj = jb(k); if (!nf) continue;
-                    const nT = nf.x < 76 && reTurma.test(nf.t) && nb.toks.some(t => t.x >= 76 && t.x < 160);
-                    const nD = nf.x < 70 && !!leadingCode(nb.toks) && /Aulas\s+semanais/i.test(nj + ' ' + jb(k + 1));
-                    const nH = /^Turma\b/.test(nj) && /Enquadramento/.test(nj);
-                    if (nT || nD || nH) break; blockBands.push(nb);
-                }
-                bi = k - 1;
-                const col = { enq: [], res: [], pri: [], hor: [], prof: [], opt: [] }, turmaCod = first.t;
-                for (const bb of blockBands) for (const tk of bb.toks) {
-                    const x = tk.x;
-                    if (x < 76) { } else if (x < 160) col.enq.push(tk); else if (x < 241) { } else if (x < 285) col.res.push(tk);
-                    else if (x < 344) col.pri.push(tk); else if (x < 434) col.hor.push(tk); else if (x < 490) col.prof.push(tk); else col.opt.push(tk);
-                }
-                const jc = a => a.slice().sort((p, q) => (p.y - q.y) || (p.x - q.x)).map(t => t.t).join(' ').replace(/\s+/g, ' ').trim();
-                const enq = jc(col.enq), reserva = jc(col.res), priText = jc(col.pri), horText = jc(col.hor), prof = tituloCase(jc(col.prof)), optText = jc(col.opt);
-                const prios = []; const re = /(\d+)\s*-\s*([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ .]*?)(?=\s+\d+\s*-\s*|$)/g; let mp;
-                while ((mp = re.exec(priText))) prios.push({ rank: +mp[1], curso: mp[2].replace(/\s+/g, ' ').trim() });
-                let prioridadeSI = null; for (const p of prios) { const n = norm(p.curso); if (n === ALVO || n.startsWith('SIST DE INFORM')) { prioridadeSI = p.rank; break; } }
-                const horarios = [], seen = new Set(); let campus = 'CURITIBA';
-                const sr = /(\d)([MTN])(\d)\((\*{0,2})([A-Za-z0-9-]+)\)/g; let sm;
-                while ((sm = sr.exec(horText))) { const dia = +sm[1], per = sm[2], slot = +sm[3], ast = sm[4], sala = sm[5]; if (ast) campus = ast === '**' ? 'NEOVILLE' : 'ECOVILLE'; const key = dia + per + slot; if (seen.has(key)) continue; seen.add(key); horarios.push({ diaSemana: dia, periodo: per, slot, sala }); }
-                const elegivel = !/fechada/i.test(reserva) || prioridadeSI != null;   // pode cursar? (Fechada exige SI na prioridade)
-                turmas.push({ codigo: disc.codigo, nome: disc.nome, turma: turmaCod, professor: prof, aulasSem: disc.aulas, horarios, campus, enquadramento: enq, reserva, prioridadeSI, prioridades: prios, elegivel, optativaMatrizes: (optText.match(/Matriz:\d+/g) || []) });
-                continue;
-            }
+            if (/^Turma\b/.test(joined) && /Enquadramento/.test(joined)) { fecharTurma(); cols = colunasDoCabecalho(b.toks); continue; }
+            const isTurma = !!cols && !!disc && colunaDe(cols, first.x) === 'turma' && reTurma.test(first.t) && b.toks.some(t => colunaDe(cols, t.x) === 'enq');
+            if (!isTurma) { pendentes.push(b); continue; }
+            const acima = pendentes.filter(p => p.y >= b.y - ACIMA_DA_TURMA);
+            pendentes = pendentes.filter(p => p.y < b.y - ACIMA_DA_TURMA);
+            fecharTurma();
+            aberta = { disc, codigo: first.t, bandas: [...acima, b] };
         }
+        if (aberta) aberta.bandas.push(...pendentes);
+        pendentes = [];
     }
+    fecharTurma();
     // Disciplinas que constam no PDF mas não tiveram nenhuma turma parseada (turma/horário ausentes)
     // ainda devem poder ser listadas/usadas — Turmas Abertas é a fonte da verdade do que está disponível.
     const comTurma = new Set(turmas.map(t => t.codigo));

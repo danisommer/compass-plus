@@ -1501,6 +1501,11 @@ function atualizarGNH(semIdx) {
 }
 
 /* ---------- Processamento dos uploads ---------- */
+// PDFs com texto legível, mas sem um conteúdo essencial para o planejamento
+const ERROS_CONTEUDO_PDF = {
+    'matriz-prereq': 'A Matriz Curricular enviada não traz nenhum pré-requisito — provavelmente a coluna "Pré-requisito(s)" ficou cortada na impressão. Imprima de novo em paisagem (ou com escala menor) até a tabela caber inteira na página e envie o novo PDF.',
+    'gnh-horarios': 'Nenhum horário de aula foi reconhecido nas Turmas Abertas — o layout do PDF pode ter mudado. Confira se o arquivo é a tela "Turmas Abertas" completa do seu curso.',
+};
 async function processar() {
     const st = $('#proc-status'); const setp = (m) => { if (st) st.textContent = m; };
     try {
@@ -1508,6 +1513,7 @@ async function processar() {
         const mp = await extrairPaginas(S.files.matriz);
         const matriz = K.parseMatriz(mp);
         if (!matriz.disciplinas.length) throw new Error('matriz');
+        if (!matriz.disciplinas.some(d => d.preRequisitos.length)) throw new Error('matriz-prereq');
         setp('Lendo Histórico Escolar…');
         const hp = await extrairPaginas(S.files.historico);
         const historico = K.parseHistorico(hp);
@@ -1515,6 +1521,7 @@ async function processar() {
         setp('Lendo Turmas Abertas…');
         let gnh; try { gnh = await lerTurmas(S.files.gnh); } catch (e) { throw new Error('gnh'); }
         if (!gnh.length) throw new Error('gnh');
+        if (!gnh.some(t => t.horarios.length)) throw new Error('gnh-horarios');
 
         S.parsed = { matriz, historico, gnh };
         const eqd = K.detectarEquivalencias(matriz, gnh);
@@ -1528,7 +1535,7 @@ async function processar() {
     } catch (err) {
         const nome = err.message === 'matriz' ? 'Matriz Curricular' : err.message === 'historico' ? 'Histórico Escolar' : err.message === 'gnh' ? 'Turmas Abertas' : '';
         setp('');
-        alert(nome ? `Não foi possível extrair dados de [${nome}]. Verifique se o PDF tem texto selecionável (não é imagem escaneada).` : 'Erro ao processar os arquivos: ' + err.message);
+        alert(ERROS_CONTEUDO_PDF[err.message] || (nome ? `Não foi possível extrair dados de [${nome}]. Verifique se o PDF tem texto selecionável (não é imagem escaneada).` : 'Erro ao processar os arquivos: ' + err.message));
         console.error(err);
     }
 }
