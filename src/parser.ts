@@ -290,7 +290,7 @@ function parseHistorico(pages) {
     Optativa) localizadas pelo cabeçalho de cada tabela, não por posição fixa.
     Saída compatível com a oferta usada no app + prioridadeSI/reserva.
     =================================================================== */
-const COLUNAS_TA = [['turma', /^Turma$/i], ['enq', /^Enquadramento$/i], ['vagas', /^Vagas$/i], ['res', /^Reserva$/i], ['pri', /^Prioridade$/i], ['hor', /^Hor[áa]rio$/i], ['prof', /^Professor$/i], ['opt', /^Optativa$/i]];
+const COLUNAS_TA: [string, RegExp][] = [['turma', /^Turma$/i], ['enq', /^Enquadramento$/i], ['vagas', /^Vagas$/i], ['res', /^Reserva$/i], ['pri', /^Prioridade$/i], ['hor', /^Hor[áa]rio$/i], ['prof', /^Professor$/i], ['opt', /^Optativa$/i]];
 // Início (x) de cada coluna a partir da linha de cabeçalho; null se faltar Turma, Enquadramento ou Horário.
 function colunasDoCabecalho(toks) {
     const cols = [];
