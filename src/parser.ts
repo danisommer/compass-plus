@@ -88,14 +88,19 @@ function reconstruirLinhas(pages, xMax?) {
 /* ===================================================================
     PARSER 1 — Matriz Curricular
     =================================================================== */
+// Recuo (pt) do início da coluna "Modelo de disciplina" em relação ao título "Modelo" do cabeçalho:
+// o conteúdo da coluna é centralizado e palavras largas começam alguns pontos antes do título.
+const RECUO_COLUNA_MODELO = 8;
 function parseMatriz(pages) {
     const linhas = reconstruirLinhas(pages);
     const disciplinas = [];
     const isHeader = toks => toks[0] && /^(Período|PER|\[OPT\])$/.test(toks[0].t);
+    let inicioColunaModelo = null;
 
     for (let i = 0; i < linhas.length; i++) {
         const toks = linhas[i];
-        if (!toks.length || isHeader(toks)) continue;
+        if (!toks.length) continue;
+        if (isHeader(toks)) { const mod = toks.find(t => /^Modelo$/i.test(t.t)); if (mod) inicioColunaModelo = mod.x - RECUO_COLUNA_MODELO; continue; }
         if (!/^[1-8]$/.test(toks[0].t)) continue;
 
         // conjunto + código
@@ -119,13 +124,13 @@ function parseMatriz(pages) {
         const nameStartX = toks[nameFirstIdx] ? toks[nameFirstIdx].x : modeloX;
         const codeX = toks[codeIdx].x;
         const midName = (codeX + nameStartX) / 2;
-        const midMod = (nameStartX + modeloX) / 2;
+        const inicioModelo = inicioColunaModelo != null ? inicioColunaModelo : (nameStartX + modeloX) / 2;
 
         // linha-início: separa nome × modelo pela coluna (x), não pela posição
         const nomeToks = [], modeloToks = [];
         for (let k = nameFirstIdx; k < runStart; k++) {
             const tk = toks[k];
-            if (tk.x < midMod) nomeToks.push(tk.t); else modeloToks.push(tk.t);
+            if (tk.x < inicioModelo) nomeToks.push(tk.t); else modeloToks.push(tk.t);
         }
 
         // continuação nas linhas seguintes (nome/modelo por coluna; pára no rodapé/próxima disc.)
@@ -144,10 +149,10 @@ function parseMatriz(pages) {
             }
             contLines++;
             for (const tk of ln) {
-                if (isCodigo(tk.t)) { if (tk.x > midMod) prereqs.push(tk.t); continue; }
+                if (isCodigo(tk.t)) { if (tk.x > inicioModelo) prereqs.push(tk.t); continue; }
                 if (tk.t === 'Turmas' || tk.t === 'horas') continue;
-                if (tk.x >= midName && tk.x < midMod) nomeToks.push(tk.t);      // inclui dígitos do nome
-                else if (tk.x >= midMod && !/^\d+$/.test(tk.t)) modeloToks.push(tk.t);
+                if (tk.x >= midName && tk.x < inicioModelo) nomeToks.push(tk.t);      // inclui dígitos do nome
+                else if (tk.x >= inicioModelo && !/^\d+$/.test(tk.t)) modeloToks.push(tk.t);
             }
         }
 

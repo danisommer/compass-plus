@@ -470,10 +470,11 @@ function gerarGrades(ctx, candOrdenadas, pref, bloqueios, usarGNH, deadline, tra
     rec(0, [], []);
 
     // dedup por conjunto de códigos, top-5 por score
-    // se nenhuma grade atinge o mínimo, cai p/ as melhores grades parciais (oferta insuficiente)
+    // se nenhuma grade atinge o mínimo, cai p/ as melhores grades parciais (oferta insuficiente),
+    // ordenadas primeiro pelo nº de matérias (o mais perto da carga mínima) e depois pelo score
     const base = grades.length ? grades : parciais;
     const vistos = new Set(); const unicas = [];
-    base.sort((a, b) => b.score - a.score);
+    base.sort(grades.length ? (a, b) => b.score - a.score : (a, b) => (b.sel.length - a.sel.length) || (b.score - a.score));
     for (const g of base) {
         const key = g.sel.map(s => s.disciplina.codigo).sort().join(',');
         if (vistos.has(key)) continue; vistos.add(key); unicas.push(g);

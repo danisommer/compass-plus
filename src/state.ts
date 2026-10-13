@@ -259,6 +259,11 @@ function semestreTerminal(idx, horas, cursadasSet, term) {
     }, term);
 }
 
+// Matérias liberadas e ofertadas que o filtro de turno/campus das preferências tirou das candidatas.
+function descartadasPorPreferencia(cand, semFiltro) {
+    const ficaram = new Set(cand.map(c => c.disciplina.codigo));
+    return { candidatas: cand.length, semFiltro: semFiltro.length, descartadas: semFiltro.filter(c => !ficaram.has(c.disciplina.codigo)).map(c => c.disciplina.codigo) };
+}
 // Resumo de um semestre projetado para o log: o que foi gerado, recomendado, escolhido e o estado terminal.
 function resumoSemestre(s) {
     const sel = (s.grade && s.grade.sel) || [];
@@ -266,6 +271,7 @@ function resumoSemestre(s) {
         idx: s.idx, rotulo: s.rotulo, status: s.status,
         terminal: s.formatura ? 'formatura' : s.cursoImpossivel ? 'impossivel' : s.quaseFormatura ? 'quase' : null,
         candidatas: (s.candidatas || []).length, grades: (s.grades || []).length, personalizadas: (s.personalizadas || []).length,
+        descartadasPeloFiltro: s.filtroPrefs ? s.filtroPrefs.descartadas : [],
         estourouPrazo: !!s.estourou, recomendada: s.recKey == null ? null : s.recKey,
         grade: sel.map(x => `${x.disciplina.codigo}/${x.turma ? x.turma.turma : '—'}`),
         emConflito: sel.filter(x => x.bloqueado).map(x => x.disciplina.codigo),
@@ -299,9 +305,11 @@ function projetar() {
     // a partir do semestre seguinte assume-se que as em-andamento foram aprovadas
     cursadas = new Set([...cursadas, ...D.emAndamento]);
 
+    const ctxSemFiltroPrefs = { ...D.ctx, pref: { ...D.ctx.pref, campusUnico: false, turnos: ['M', 'T', 'N'] } };
     for (let idx = 1; idx <= MAXSEM; idx++) {
         const curIdx = new Set(cursadas);
         const cand = K.candidatasSemestre(D.ctx, curIdx, new Set(), true);
+        const filtroPrefs = descartadasPorPreferencia(cand, K.candidatasSemestre(ctxSemFiltroPrefs, curIdx, new Set(), true));
         const faltObrig = new Set(D.matriz.disciplinas.filter(d => !d.isOpcional && !curIdx.has(d.codigo)).map(d => d.codigo));
         const periodoRef = (D.hist.aluno.periodoAtual || 1) + idx;   // período nominal deste semestre projetado
         const hAgora = calcHorasIdx(curIdx, idx);                    // conjuntos optativos já satisfeitos?
@@ -312,7 +320,7 @@ function projetar() {
             D.cursadasFinal = curIdx;
             const term = classificarTerminal(hAgora, curIdx, candUteis, idx);
             if (term.quaseFormatura && sems.length > 1) Object.assign(sems[sems.length - 1], term);
-            else sems.push(semestreTerminal(idx, hAgora, curIdx, term));
+            else sems.push(semestreTerminal(idx, hAgora, curIdx, { ...term, filtroPrefs }));
             break;
         }
         const conjFeitos = {
@@ -362,7 +370,7 @@ function projetar() {
             idx, rotulo: rotuloSem(idx), status: confirmada ? 'confirmado' : 'futuro',
             grade: escolhida, grades, personalizadas: pers, recKey, escolhida: confirmada, horas, candidatas: ord,
             manuais: manuaisAqui, formatura, estourou: ger.estourou, inviavel: grades.length === 0,
-            bloqueios: manuais, trab: trabCalc(idx, escolhida.sel), cursadasAntes: curIdx, faltObrig,
+            bloqueios: manuais, trab: trabCalc(idx, escolhida.sel), cursadasAntes: curIdx, faltObrig, filtroPrefs,
             aguardandoTrab: !trabRespondido(idx)   // S2: só exibe cronograma/grades após responder se trabalha
         };
         sems.push(sem);

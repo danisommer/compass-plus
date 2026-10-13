@@ -842,6 +842,12 @@ function planoSemestreHTML(sem) {
     const escolhida = sem.grade;
     const banners = [];
     if (sem.status !== 'confirmado') banners.push(`<div class="banner warn">⚠ Grade estimada para ${sem.rotulo} — usa as Turmas Abertas carregadas como previsão da oferta; as turmas e horários reais podem mudar.</div>`);
+    const fp = sem.filtroPrefs;
+    if (fp && fp.descartadas.length) {
+        const p = S.preferencias;
+        const nomes = fp.descartadas.map(c => `${c} — ${(D.byCod.get(c) || {}).nome || ''}`).join('\\n');
+        banners.push(`<div class="banner info">ℹ ${fp.descartadas.length} matéria(s) já liberada(s) e ofertada(s) ficaram de fora de ${sem.rotulo} pelo filtro de turno/campus (turnos: ${p.turnos.join(' ')} · campus: ${p.campusUnico ? esc(p.campus) : 'qualquer'}) — sem o filtro seriam <b>${fp.semFiltro}</b> candidatas em vez de <b>${fp.candidatas}</b>. Uma turma só entra se <b>todos</b> os horários dela estiverem nos turnos escolhidos. <span class="b-actions"><button class="btn btn-sm btn-ghost" data-editar-pref data-tip="${esc(nomes)}">⚙️ Ajustar preferências</button></span></div>`);
+    }
     // rascunho banner
     const blocos = sem.bloqueios || [];
     const rasc = escolhida.sel.filter(s => s.bloqueado);
