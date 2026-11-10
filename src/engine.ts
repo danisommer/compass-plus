@@ -10,8 +10,8 @@ import Parser from './parser';
 /* ---------- Constantes de horário (Apêndice A) ---------- */
 const SLOTS = {
     M: { 1: ['07h30', '08h20'], 2: ['08h20', '09h10'], 3: ['09h10', '10h00'], 4: ['10h20', '11h10'], 5: ['11h10', '12h00'], 6: ['12h00', '12h50'] },
-    T: { 1: ['13h10', '14h00'], 2: ['14h00', '14h50'], 3: ['14h50', '15h40'], 4: ['16h00', '16h50'], 5: ['16h50', '17h40'], 6: ['17h40', '18h30'] },
-    N: { 1: ['18h50', '19h35'], 2: ['19h35', '20h20'], 3: ['20h20', '21h05'], 4: ['21h05', '21h50'], 5: ['21h50', '22h30'] },
+    T: { 1: ['13h00', '13h50'], 2: ['13h50', '14h40'], 3: ['14h40', '15h30'], 4: ['15h50', '16h40'], 5: ['16h40', '17h30'], 6: ['17h30', '18h20'] },
+    N: { 1: ['18h40', '19h30'], 2: ['19h30', '20h20'], 3: ['20h20', '21h10'], 4: ['21h20', '22h10'], 5: ['22h10', '23h00'] },
 };
 const DIAS = { 2: 'Segunda', 3: 'Terça', 4: 'Quarta', 5: 'Quinta', 6: 'Sexta', 7: 'Sábado' };
 // ordem vertical dos slots (M1..M6, T1..T6, N1..N5)
@@ -35,9 +35,9 @@ function slotTexto(p, s) { const a = SLOTS[p] && SLOTS[p][s]; return a ? `${a[0]
 const DIAS_UTEIS = [2, 3, 4, 5, 6];
 const SLOT_MIN = {};                                       // 'M1' -> {ini,fim} em minutos
 for (const [p, s] of ORDEM_SLOTS) { const a = SLOTS[p][s]; SLOT_MIN[p + s] = { ini: hhmmMin(a[0]), fim: hhmmMin(a[1]) }; }
-// Limites do dia letivo (M1 07h30 → N5 22h30). Só delimitam até onde a faixa-limite pode CRESCER
+// Limites do dia letivo (M1 07h30 → N5 23h00). Só delimitam até onde a faixa-limite pode CRESCER
 // sozinha: fora deles não há aula para o trabalho desviar, então alargar mais não ajudaria a grade.
-const DIA_INI = 7 * 60 + 30, DIA_FIM = 22 * 60 + 30;
+const DIA_INI = 7 * 60 + 30, DIA_FIM = 23 * 60;
 const DEFAULT_TRAB = {
     trabalha: null,                          // null = não respondido | true = Sim | false = Não
     modo: 'fixo',                            // 'fixo' (trava a grade) | 'flexivel' (encaixa ao redor das aulas)

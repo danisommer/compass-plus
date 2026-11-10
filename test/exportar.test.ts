@@ -12,8 +12,8 @@ describe('aulasDaGrade', () => {
     const aulas = aulasDaGrade(sel);
 
     it('junta horários consecutivos no mesmo dia, mesmo com o intervalo entre turnos', () => {
-        expect(aulas.find(a => a.codigo === 'ICSX40')).toMatchObject({ diaSemana: 4, inicioMin: 17 * 60 + 40, fimMin: 19 * 60 + 35, sala: 'CB-201' });
-        expect(aulas.find(a => a.codigo === 'ICSA31' && a.diaSemana === 5)).toMatchObject({ inicioMin: 16 * 60, fimMin: 17 * 60 + 40 });
+        expect(aulas.find(a => a.codigo === 'ICSX40')).toMatchObject({ diaSemana: 4, inicioMin: 17 * 60 + 30, fimMin: 19 * 60 + 30, sala: 'CB-201' });
+        expect(aulas.find(a => a.codigo === 'ICSA31' && a.diaSemana === 5)).toMatchObject({ inicioMin: 15 * 60 + 50, fimMin: 17 * 60 + 30 });
     });
 
     it('separa dias diferentes e ignora matérias em conflito com bloqueio', () => {
@@ -32,8 +32,8 @@ describe('gerarIcs', () => {
     });
 
     it('cria uma aula semanal a partir da primeira ocorrência do dia', () => {
-        expect(linhas).toContain('DTSTART:20270303T174000');
-        expect(linhas).toContain('DTEND:20270303T193500');
+        expect(linhas).toContain('DTSTART:20270303T173000');
+        expect(linhas).toContain('DTEND:20270303T193000');
         expect(linhas).toContain('DTSTART:20270301T073000');
         expect(linhas.filter(l => l === 'RRULE:FREQ=WEEKLY;UNTIL=20270703T235959')).toHaveLength(3);
         expect(linhas.filter(l => l === 'BEGIN:VEVENT')).toHaveLength(3);
