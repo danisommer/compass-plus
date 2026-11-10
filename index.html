@@ -1,21 +1,31 @@
 <!DOCTYPE html>
-<html lang="pt-BR">
+<html lang="pt-BR" data-theme="dark">
 
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Compass+ · Planejamento Acadêmico UTFPR</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link
-    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap"
-    rel="stylesheet" />
+  <meta name="description" content="Planeje sua formatura na UTFPR a partir dos PDFs do Portal do Aluno. Tudo roda no seu navegador." />
+  <meta name="color-scheme" content="dark light" />
+  <script>
+    {
+      let salvo = null;
+      try {
+        salvo = localStorage.getItem("compass_tema");
+      } catch {
+        salvo = null;
+      }
+      const claroNoSistema = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+      document.documentElement.dataset.theme = salvo === "light" || salvo === "dark" ? salvo : claroNoSistema ? "light" : "dark";
+    }
+  </script>
 </head>
 
 <body>
+  <noscript>
+    <p class="noscript">O Compass+ precisa de JavaScript habilitado.</p>
+  </noscript>
   <div id="root"></div>
-  <!-- App em ES modules (Vite): engine.ts (núcleo) ← state.ts (dados) ← main.ts (UI).
-       pdf.js, Sortable e o CSS agora são importados pelos próprios módulos. -->
   <script type="module" src="/src/main.ts"></script>
 </body>
 
