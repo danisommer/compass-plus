@@ -41,7 +41,7 @@ function carregar() {
 /** Problemas que impedem reaproveitar a leitura salva: matriz reprovada em `verificarMatriz` ou lida por versão sem os conjuntos do histórico. */
 function problemasDaLeituraSalva(parsed): string[] {
     const v = K.verificarMatriz(parsed.matriz);
-    const problemas = v.ok ? [] : v.problemas;
+    const problemas: string[] = v.ok === false ? [...v.problemas] : [];
     if (!parsed.historico || !parsed.historico.resumoOptativas || (parsed.matriz.resumo || {}).trilhas === undefined)
         problemas.push('leitura salva por uma versão sem os conjuntos optativos do histórico');
     return problemas;
@@ -168,8 +168,8 @@ function manualNoSem(idx) {
 }
 // soma as horas lançadas por-semestre de um item manual até (e incluindo) `idx`
 function somaManualAteSem(item, idx) { let s = 0; const p = (item && item.porSem) || {}; for (const k in p) if (+k <= idx) s += (+p[k] || 0); return s; }
-function cursadasComManuais(baseSet, idx) {
-    const s = new Set(baseSet);
+function cursadasComManuais(baseSet: Iterable<string>, idx: number): Set<string> {
+    const s = new Set<string>(baseSet);
     const m = S.manuais;
     for (const cod in m.estagios) { if (m.estagios[cod] != null && m.estagios[cod] <= idx) s.add(cod); }
     return s;

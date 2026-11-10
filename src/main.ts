@@ -1540,17 +1540,17 @@ async function processar() {
         const mp = await extrairPaginas(S.files.matriz);
         const matriz = K.parseMatriz(mp);
         const verificacao = K.verificarMatriz(matriz);
-        log('pdf.matriz', { paginas: mp.length, disciplinas: matriz.disciplinas.length, comPreRequisito: matriz.disciplinas.filter(d => d.preRequisitos.length).length, totais: { obrigatorias: matriz.resumo.chObrigatoriaTotal, optativas: matriz.resumo.chOptativasTotal, extensao: matriz.resumo.chExtensaoTotal, eletivas: matriz.resumo.chEletivaTotal }, problemas: verificacao.ok ? [] : verificacao.problemas, ms: decorrido() });
+        log('pdf.matriz', { paginas: mp.length, disciplinas: matriz.disciplinas.length, comPreRequisito: matriz.disciplinas.filter(d => d.preRequisitos.length).length, totais: { obrigatorias: matriz.resumo.chObrigatoriaTotal, optativas: matriz.resumo.chOptativasTotal, extensao: matriz.resumo.chExtensaoTotal, eletivas: matriz.resumo.chEletivaTotal }, problemas: verificacao.ok === false ? verificacao.problemas : [], ms: decorrido() });
         if (!matriz.disciplinas.length) throw new Error('matriz');
-        if (!verificacao.ok) throw new ErroConteudoPdf('matriz-leitura', verificacao.problemas);
+        if (verificacao.ok === false) throw new ErroConteudoPdf('matriz-leitura', verificacao.problemas);
         if (!matriz.disciplinas.some(d => d.preRequisitos.length)) throw new Error('matriz-prereq');
         setp('Lendo Histórico Escolar…');
         const hp = await extrairPaginas(S.files.historico);
         const historico = K.parseHistorico(hp);
         const estrutura = K.estruturarConjuntos(matriz, historico.resumoOptativas);
-        log('pdf.historico', { paginas: hp.length, cursadas: historico.cursadas.length, aprovadas: historico.cursadasAprovadas.length, emAndamento: historico.emAndamento, semestreMatriculadas: historico.semestreMatriculadas, periodo: historico.aluno.periodoAtual, conjuntos: historico.resumoOptativas ? historico.resumoOptativas.conjuntos.map(c => `${c.id}:${c.chObrigatoria}`) : null, problemasConjuntos: estrutura.ok ? [] : estrutura.problemas, ms: decorrido() });
+        log('pdf.historico', { paginas: hp.length, cursadas: historico.cursadas.length, aprovadas: historico.cursadasAprovadas.length, emAndamento: historico.emAndamento, semestreMatriculadas: historico.semestreMatriculadas, periodo: historico.aluno.periodoAtual, conjuntos: historico.resumoOptativas ? historico.resumoOptativas.conjuntos.map(c => `${c.id}:${c.chObrigatoria}`) : null, problemasConjuntos: estrutura.ok === false ? estrutura.problemas : [], ms: decorrido() });
         if (!historico.aluno.matricula) throw new Error('historico');
-        if (!estrutura.ok) throw new ErroConteudoPdf('historico-optativas', estrutura.problemas);
+        if (estrutura.ok === false) throw new ErroConteudoPdf('historico-optativas', estrutura.problemas);
         const matrizCurso = estrutura.matriz;
         setp('Lendo Turmas Abertas…');
         let lidas; try { lidas = await lerTurmas(S.files.gnh); } catch (e) { log('pdf.turmas.excecao', descreverErro(e), 'error'); throw new Error('gnh'); }
