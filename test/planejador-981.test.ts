@@ -30,7 +30,7 @@ function entrada(pref, cargaMax: number, extensaoPorFora = 270, fixos = new Map<
         fixos, ofertas,
         lancamentos: { extensao: extensaoPorFora, eletivas: 105, eletivasValidadas: 0 },
         periodoAtual: historico.aluno.periodoAtual,
-        cargaMax, cargaMin: 4,
+        cargaMax,
         preferenciaTrilhas: Object.keys(matriz.subareas),
         maxSemestres: MAX_SEMESTRES,
     };

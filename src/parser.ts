@@ -319,20 +319,33 @@ function lerResumoGeral(texto: string[]): ResumoGeral | null {
     };
 }
 
+/** Valor de um campo do cabeçalho até o próximo rótulo da mesma linha ("… Período: 5" → "…"). */
+const ateProximoRotulo = (s: string) => s.split(/\s+\p{Lu}\p{L}*:\s/u)[0].trim();
+/** Por que o aluno está no período mostrado: limite de aulas faltantes do sistema e quantas faltam ("Histórico de Disciplinas Faltantes"). */
+function lerRetencao(texto: string[]): { limite: number; aulasFaltantes: number; periodo: number } | null {
+    const junto = texto.join(' ');
+    const limite = junto.match(/atingir\s+(\d+)\s+aulas ou mais/i);
+    const obs = junto.match(/atingiu\s+([\d,]+)\s+aulas[^.]*?permanecerá no\s+(\d+)º\s*Período/i);
+    return limite && obs ? { limite: +limite[1], aulasFaltantes: parseFloat(obs[1].replace(',', '.')), periodo: +obs[2] } : null;
+}
+
 function parseHistorico(pages) {
     const linhas = reconstruirLinhas(pages);
     const texto = linhas.map(l => l.map(t => t.t).join(' '));
 
     const head = texto.slice(0, 25).join('\n');
     const get = re => { const m = head.match(re); return m ? m[1].trim() : ''; };
+    const matriz = ateProximoRotulo(get(/Matriz:\s*([^\n]+)/));
     const aluno = {
         matricula: get(/Aluno:\s*(\d+)/),
         nome: tituloCase(get(/Aluno:\s*\d+\s*-\s*([^\n]+)/).split(/\s+Identidade/i)[0]),
-        curso: get(/Curso:\s*([^\n]+)/),
+        curso: ateProximoRotulo(get(/Curso:\s*([^\n]+)/)),
         periodoAtual: parseInt(get(/Período:\s*(\d+)/) || '1', 10),
-        matriz: get(/Matriz:\s*([^\n]+)/),
+        matriz,
+        matrizCodigo: (matriz.match(/^\d+/) || [''])[0],
         coeficienteAbsoluto: parseFloat((get(/Coeficiente absoluto:\s*([\d,]+)/) || '0').replace(',', '.')),
         coeficienteNormalizado: parseFloat((get(/Coeficiente normalizado:\s*([\d,]+)/) || '0').replace(',', '.')),
+        retencao: lerRetencao(texto),
     };
 
     // Linhas-âncora: dígito período + código + contém ano 20xx
@@ -501,33 +514,69 @@ function semestreDaOferta(pages): { ano: number; per: number } | null {
 /* ===================================================================
     Equivalências GNH↔Matriz + divergências
     =================================================================== */
-function detectarEquivalencias(matriz, gnh) {
+/** Sugestão de equivalência entre um código das Turmas Abertas e um da matriz. `padrao` é a resposta pré-marcada. */
+export interface DivergenciaCodigo {
+    gnhCod: string; gnhNome: string; matrizCod: string; matrizNome: string; score: number;
+    listaMatriz: boolean; matrizesListadas: string[]; padrao: 'sim' | 'nao';
+}
+const SIMILARIDADE_MINIMA = 0.9;
+const RE_NUMERAL = /^(\d+|I|II|III|IV|V|VI|VII|VIII|IX|X)$/;
+/** Nomes que só diferem por número ou algarismo romano ("Trabalho de Integração 1" × "… 2") são disciplinas diferentes. */
+function diferemSoPorNumero(a: string, b: string): boolean {
+    const partes = (s: string) => {
+        const t = norm(s).split(' ');
+        return { base: t.filter(p => !RE_NUMERAL.test(p)).join(' '), numeros: t.filter(p => RE_NUMERAL.test(p)).join(' ') };
+    };
+    const pa = partes(a), pb = partes(b);
+    return pa.base === pb.base && pa.numeros !== pb.numeros;
+}
+
+/**
+ * Equivalências entre códigos das Turmas Abertas e da matriz: `auto` para o prefixo "I" (CSX41 → ICSX41) e `divergencias`
+ * para nomes parecidos. Uma divergência só vem marcada "sim" se alguma turma listar a matriz do aluno na coluna "Optativa".
+ */
+function detectarEquivalencias(matriz, gnh, matrizAluno = ''): { auto: Record<string, string>; divergencias: DivergenciaCodigo[] } {
     const mCods = new Set(matriz.disciplinas.map(d => d.codigo));
-    const auto = {}; const divergencias = [];
+    const auto = {}; const divergencias: DivergenciaCodigo[] = [];
     const gnhCods: any[] = [...new Set(gnh.map(t => t.codigo))];
     for (const gc of gnhCods) {
         if (mCods.has(gc)) continue;
         if (mCods.has('I' + gc)) { auto[gc] = 'I' + gc; continue; }   // CSX41 -> ICSX41
-        const nome = (gnh.find(t => t.codigo === gc) || {}).nome || '';
+        const turmas = gnh.filter(t => t.codigo === gc);
+        const nome = turmas[0].nome || '';
         let best = null, bestS = 0;
         for (const d of matriz.disciplinas) {
+            if (diferemSoPorNumero(nome, d.nome)) continue;
             const s = dice(nome, d.nome);
             if (s > bestS) { bestS = s; best = d; }
         }
-        if (best && bestS >= 0.9) divergencias.push({ gnhCod: gc, gnhNome: nome, matrizCod: best.codigo, matrizNome: best.nome, score: bestS });
+        if (!best || bestS < SIMILARIDADE_MINIMA) continue;
+        const matrizesListadas = [...new Set(turmas.flatMap(t => (t.optativaMatrizes || []).map(m => m.replace(/^Matriz:/, ''))))] as string[];
+        const listaMatriz = !!matrizAluno && matrizesListadas.includes(matrizAluno);
+        divergencias.push({ gnhCod: gc, gnhNome: nome, matrizCod: best.codigo, matrizNome: best.nome, score: bestS, listaMatriz, matrizesListadas, padrao: listaMatriz ? 'sim' : 'nao' });
     }
     return { auto, divergencias };
+}
+
+export type TipoPdf = 'matriz' | 'historico' | 'gnh';
+/** Qual dos três PDFs do Portal do Aluno é este, pelo texto da primeira página; `null` se não for nenhum deles. */
+function identificarPdf(pages): TipoPdf | null {
+    const texto = reconstruirLinhas(pages.slice(0, 1)).map(l => l.map(t => t.t).join(' ')).join('\n');
+    if (/Turmas Abertas/i.test(texto)) return 'gnh';
+    if (/Histórico Escolar/i.test(texto) && /Aluno:/.test(texto)) return 'historico';
+    if (/Matriz Curricular/i.test(texto)) return 'matriz';
+    return null;
 }
 
 /* ---------- exports ---------- */
 export {
     norm, dice, isCodigo, tituloCase, reconstruirLinhas,
-    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, semestreDaOferta, detectarEquivalencias,
+    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, semestreDaOferta, detectarEquivalencias, identificarPdf, diferemSoPorNumero,
 };
 
 const Parser = {
     norm, dice, reconstruirLinhas,
-    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, semestreDaOferta, detectarEquivalencias,
+    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, semestreDaOferta, detectarEquivalencias, identificarPdf, diferemSoPorNumero,
     tituloCase,
 };
 export default Parser;

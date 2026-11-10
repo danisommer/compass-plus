@@ -93,4 +93,55 @@ describe('projeção do app (state.derive) com as fixtures do dono', () => {
         expect(ultimo.quaseFormatura).toBe(true);
         expect([...ultimo.horas.obrigatorias.manuaisPendentes].sort()).toEqual(['ICSX51', 'ICSX52']);
     });
+
+    it('resume no topo o que falta, contando o que está em andamento e o que foi lançado por fora', () => {
+        projetado();
+        const f = estado.D.faltaInicial;
+        expect([...f.obrigatorias.pendentes].sort()).toEqual(['ICSX40', 'ICSX41']);
+        expect(f.obrigatorias.manuaisPendentes).toEqual([]);
+        expect(f.conjuntos.map(c => [c.id, c.faltante])).toEqual([['1159', 135], ['1161', 45]]);
+        expect(f.extensao.ok).toBe(true);
+    });
+});
+
+describe('conferência e perguntas iniciais (antes de projetar)', () => {
+    beforeEach(() => estado.setEstado(estadoDoDono()));
+
+    it('confere as horas com o histórico e lista o que está em andamento', () => {
+        const c = estado.dadosConferencia();
+        expect(c.divergencias).toEqual([]);
+        expect(c.situacao.obrigatorias).toMatchObject({ cursada: 1395, faltante: 610 });
+        expect(c.emAndamento.map(d => d.codigo).sort()).toEqual(['FCH7FA', 'ICSH31', 'ICSI30', 'ICSS30', 'ICSX30']);
+        expect(c.oferta).toBe('2026/2');
+    });
+
+    it('pergunta pelos itens sem turma ainda não aprovados', () => {
+        expect(estado.manuaisPendentesDaLeitura().map(d => d.codigo).sort()).toEqual(['ICSX51', 'ICSX52']);
+    });
+
+    it('guarda quando e como o estágio é validado, e desmarca com null', () => {
+        estado.definirConclusaoManual('ICSX51', 0, 'atividade-profissional');
+        expect(estado.S.manuais.estagios.ICSX51).toBe(0);
+        expect(estado.S.manuais.formas.ICSX51).toBe('atividade-profissional');
+        estado.definirConclusaoManual('ICSX51', null, 'regular');
+        expect(estado.S.manuais.estagios).not.toHaveProperty('ICSX51');
+    });
+
+    it('lança as horas feitas por fora num único semestre', () => {
+        estado.definirLancamentoPorFora('extensao', 150, 2);
+        expect(estado.S.manuais.extensao).toEqual({ porSem: { 2: 150 } });
+        estado.definirLancamentoPorFora('extensao', 0, 2);
+        expect(estado.S.manuais.extensao).toEqual({ porSem: {} });
+    });
+
+    it('sugere a ordem das trilhas pela prontidão até o usuário confirmar a dele', () => {
+        estado.S.preferencias.preferenciaTrilhas = [];
+        estado.sugerirOrdemDasTrilhas();
+        const sugerida = estado.prontidaoAtual().lista.map(t => t.id);
+        expect(estado.S.preferencias.preferenciaTrilhas).toEqual(sugerida);
+        estado.S.preferencias.preferenciaTrilhas = [...sugerida].reverse();
+        estado.S.preferencias.trilhasConfirmadas = true;
+        estado.sugerirOrdemDasTrilhas();
+        expect(estado.S.preferencias.preferenciaTrilhas).toEqual([...sugerida].reverse());
+    });
 });

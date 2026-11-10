@@ -1,11 +1,12 @@
 import K from './engine';
 import { log, registrarEstado, descreverErro } from './log';
 import { agruparOfertas, alternativas, motivosDoPlano, planejar, type EntradaPlano, type ItemPlano } from './planejador';
-import { conferirComHistorico, faltaCursar, integralizado, reduzRequisito, situacao } from './requisitos';
+import { conferirComHistorico, ehManual, faltaCursar, integralizado, reduzRequisito, situacao } from './requisitos';
 import { obterSolver } from './solver';
+import { empateNoTopo, prontidaoDasTrilhas } from './trilhas';
 
 /* ---------- Estado ---------- */
-const DEFAULT_PREF = { campusUnico: false, campus: 'CURITIBA', turnos: ['M', 'T', 'N'], janela: { ...K.JANELA_INTEIRA }, cargaMin: 4, cargaMax: 7, preferenciaTrilhas: [], eletivaManual: 0 };
+const DEFAULT_PREF = { campusUnico: false, campus: 'CURITIBA', turnos: ['M', 'T', 'N'], janela: { ...K.JANELA_INTEIRA }, cargaMax: 7, preferenciaTrilhas: [], trilhasConfirmadas: false, eletivaManual: 0 };
 let S: any = null;          // estado persistido
 let D: any = {};            // derivado (não persistido)
 const MAXSEM = 14;          // horizonte máximo de semestres projetados
@@ -128,6 +129,51 @@ function derive() {
     D.projecao = projetar();
 }
 
+/* ---------- Leitura, conferência e perguntas iniciais (usam só S.parsed; não precisam de derive) ---------- */
+const SEM_LANCAMENTOS = { extensao: 0, eletivas: 0, eletivasValidadas: 0 };
+/** O que a tela de conferência mostra: dados do aluno, requisitos só com as aprovadas e diferenças para o histórico. */
+function dadosConferencia() {
+    const { matriz, historico, gnhSemestre } = S.parsed;
+    const aprovadas = new Set<string>(historico.cursadasAprovadas);
+    const eletivasValidadas = (historico.resumoEletiva && historico.resumoEletiva.validada) || 0;
+    return {
+        aluno: historico.aluno,
+        oferta: gnhSemestre,
+        emAndamento: historico.emAndamento.map(c => matriz.disciplinas.find(d => d.codigo === c)).filter(Boolean),
+        situacao: situacao(matriz, aprovadas, { ...SEM_LANCAMENTOS, eletivasValidadas }),
+        historico: { resumoGeral: historico.resumoGeral, resumoOptativas: historico.resumoOptativas, resumoEletiva: historico.resumoEletiva },
+        divergencias: conferirComHistorico(matriz, aprovadas, historico.resumoGeral, historico.resumoOptativas),
+    };
+}
+/** Obrigatórias sem turma (estágios, atividades complementares) ainda não aprovadas: as perguntas iniciais pedem quando serão concluídas. */
+function manuaisPendentesDaLeitura() {
+    const { matriz, historico } = S.parsed;
+    const aprovadas = new Set(historico.cursadasAprovadas);
+    return matriz.disciplinas.filter(d => !d.isOpcional && ehManual(d) && !aprovadas.has(d.codigo));
+}
+/** Marca (idx) ou desmarca (null) a conclusão de um item manual e guarda como ele foi/será validado. */
+function definirConclusaoManual(cod: string, idx: number | null, forma: string) {
+    if (idx == null) delete S.manuais.estagios[cod]; else S.manuais.estagios[cod] = idx;
+    S.manuais.formas = { ...(S.manuais.formas || {}), [cod]: forma };
+}
+/** Horas feitas por fora (extensão ou eletivas) num único lançamento, valendo a partir do semestre `idx`. */
+function definirLancamentoPorFora(chave: 'extensao' | 'eletiva', horas: number, idx: number) {
+    S.manuais[chave] = { porSem: horas > 0 ? { [idx]: horas } : {} };
+}
+/** Prontidão das trilhas com as preferências atuais: liberadas pelas aprovadas e em andamento e com turma que cabe no horário. */
+function prontidaoAtual() {
+    const { matriz, historico, gnh } = S.parsed;
+    const eq = S.equivalencias || {};
+    const comTurma = new Set(gnh.filter(t => K.turmaNasPreferencias(t, S.preferencias)).map(t => eq[t.codigo] || t.codigo));
+    const lista = prontidaoDasTrilhas(matriz, new Set([...historico.cursadasAprovadas, ...historico.emAndamento]), cod => comTurma.has(cod));
+    return { lista, empate: empateNoTopo(lista) };
+}
+/** Enquanto o usuário não confirmou uma ordem própria, a preferência de trilhas segue a sugestão (da mais pronta para a menos). */
+function sugerirOrdemDasTrilhas() {
+    if (S.preferencias.trilhasConfirmadas) return;
+    S.preferencias.preferenciaTrilhas = prontidaoAtual().lista.map(t => t.id);
+}
+
 /** Turma `turmaId` de `cod` na oferta do semestre `idx` (sem idx: a oferta carregada no upload); a primeira se o id não existir. */
 function turmaDe(cod, turmaId, idx?) {
     const porCodigo = idx == null ? D.gnhByCod : ofertaDoSemestre(idx).porCodigo;
@@ -231,7 +277,7 @@ function entradaDoPlano(): EntradaPlano {
     return {
         matriz: D.matriz, cumpridas: new Set([...D.cursadasBase, ...D.emAndamento]), disponivelApos: estagiosMarcados(),
         fixos, ofertas, lancamentos: lancamentosAte(Infinity), periodoAtual: D.hist.aluno.periodoAtual || 1,
-        cargaMax: S.preferencias.cargaMax, cargaMin: S.preferencias.cargaMin || 0, preferenciaTrilhas: S.preferencias.preferenciaTrilhas || [],
+        cargaMax: S.preferencias.cargaMax, preferenciaTrilhas: S.preferencias.preferenciaTrilhas || [],
         maxSemestres: MAXSEM,
     };
 }
@@ -297,6 +343,7 @@ function projetar() {
     const solver = obterSolver();
     const e = entradaDoPlano();
     const plano = planejar(solver, e);
+    D.faltaInicial = situacao(D.matriz, new Set([...e.cumpridas, ...e.disponivelApos.keys()]), e.lancamentos);
     const planejadas = plano.status === 'ok' ? plano.semestres : new Map<number, ItemPlano[]>();
     const ultimoFixo = Math.max(0, ...e.fixos.keys());
     const ultimo = Math.max(1, plano.status === 'ok' ? plano.ultimo : ultimoFixo, ultimoSemestreManual());
@@ -389,5 +436,6 @@ function limparEscolhasDesde(idx) { let n = 0; for (const k in S.escolhas) if (+
 function setEstado(v) { S = v; }
 
 export {
-    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, cursadasComManuais, ofertaDoSemestre, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
+    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, cursadasComManuais, ofertaDoSemestre, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado,
+    dadosConferencia, manuaisPendentesDaLeitura, definirConclusaoManual, definirLancamentoPorFora, prontidaoAtual, sugerirOrdemDasTrilhas
 };

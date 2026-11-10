@@ -2360,3 +2360,191 @@ input[type=range]::-webkit-slider-thumb {
 .editor .score[data-tip] {
     cursor: help
 }
+/* ---------- Envio dos PDFs, conferência, preferências e resposta no topo ---------- */
+.banner p {
+    flex: 1;
+    min-width: 0;
+    margin: 0
+}
+
+.pref-grid {
+    align-items: start
+}
+
+.dz.unico {
+    margin-top: 18px;
+    padding: 34px 20px;
+    text-align: center
+}
+
+.pdfs-lidos {
+    list-style: none;
+    padding: 0;
+    margin: 14px 0 0;
+    display: grid;
+    gap: 6px;
+    font-size: 13px
+}
+
+.pdfs-lidos li::before {
+    content: "○ ";
+    color: var(--muted)
+}
+
+.pdfs-lidos li.done::before {
+    content: "● ";
+    color: var(--success)
+}
+
+.conferencia-aluno {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 8px 18px;
+    margin: 18px 0;
+    font-size: 13px
+}
+
+.conferencia-aluno .muted {
+    display: block;
+    font-size: 11px
+}
+
+.htable.conferencia {
+    width: 100%;
+    margin: 6px 0 10px
+}
+
+.htable.conferencia th {
+    text-align: left;
+    font-size: 11px;
+    color: var(--muted);
+    padding: 6px 8px
+}
+
+.htable.conferencia td {
+    padding: 6px 8px
+}
+
+.htable.conferencia tr.diverge td {
+    color: var(--secondary)
+}
+
+.perguntas-titulo {
+    font-size: 16px;
+    margin: 26px 0 8px
+}
+
+.pergunta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    padding: 10px 0;
+    border-top: 1px solid var(--line);
+    font-size: 13px
+}
+
+.pergunta > div {
+    flex-basis: 100%
+}
+
+.pergunta select,
+.pergunta input,
+.janela select,
+.carga-max input,
+.ics-form input {
+    background: var(--surface2);
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 4px 6px;
+    font: inherit
+}
+
+.pergunta input[type=number],
+.carga-max input {
+    width: 70px
+}
+
+.diverg-lista {
+    display: grid;
+    gap: 12px;
+    margin: 16px 0
+}
+
+.card.diverg {
+    display: grid;
+    gap: 6px;
+    font-size: 13px
+}
+
+.janela {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    margin-top: 12px;
+    font-size: 13px
+}
+
+.trilha-list li .tnome {
+    flex: 1;
+    min-width: 0
+}
+
+.trilha-list li .tinfo {
+    display: block;
+    font-size: 11px;
+    color: var(--muted)
+}
+
+.trilha-list li .tmover {
+    display: flex;
+    gap: 4px
+}
+
+.trilha-list li.empate {
+    outline: 1px dashed var(--secondary)
+}
+
+.resposta {
+    border: 1px solid var(--line);
+    padding: 14px 16px;
+    margin-bottom: 16px
+}
+
+.resposta-titulo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 14px
+}
+
+.resposta-titulo h2 {
+    font-size: 22px;
+    margin: 0
+}
+
+.resposta-faltas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    margin-top: 10px;
+    font-size: 12px
+}
+
+.resposta-faltas .falta {
+    border: 1px solid var(--line);
+    padding: 2px 8px
+}
+
+.resposta-faltas .falta.ok {
+    color: var(--success)
+}
+
+.ics-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    padding: 10px 0 14px;
+    font-size: 13px
+}

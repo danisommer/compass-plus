@@ -28,7 +28,6 @@ export interface EntradaPlano {
     lancamentos: Lancamentos;
     periodoAtual: number;
     cargaMax: number;
-    cargaMin: number;
     preferenciaTrilhas: string[];
     maxSemestres: number;
 }
@@ -170,7 +169,6 @@ function montarModelo(e: EntradaPlano, cands: Map<string, Candidata>, sit: Situa
         const carga = doSem.map(v => termo(1, v.nome));
         restricao(`carga_${s}`, carga, '<=', e.cargaMax);
         restricao(`pico_${s}`, [...carga, termo(-1, 'L')], '<=', 0);
-        if (s < K && e.cargaMin > 0) restricao(`minimo_${s}`, [...carga, termo(1, `u_${s}`)], '>=', e.cargaMin);
     }
     for (const conj of sit.conjuntos.filter(c => !c.ok)) {
         const vs = vars.filter(v => v.c.d.conjuntoOptativo === conj.id);
@@ -211,13 +209,12 @@ function montarModelo(e: EntradaPlano, cands: Map<string, Candidata>, sit: Situa
     const rank = (d: Disciplina) => { const r = e.preferenciaTrilhas.indexOf(d.subAreaTrilha); return d.subAreaTrilha ? (r < 0 ? maxRank : r) : 0; };
     const urgencia = (d: Disciplina) => d.isOpcional && !d.subAreaTrilha ? URGENCIA_CONJUNTO_FIXO : 1;
     const maxCedo = K * n * URGENCIA_CONJUNTO_FIXO;
-    const pesoEquilibrio = maxCedo + 1, maxEquilibrio = pesoEquilibrio * (e.cargaMax + K * e.cargaMin);
+    const pesoEquilibrio = maxCedo + 1, maxEquilibrio = pesoEquilibrio * e.cargaMax;
     const pesoTrilha = maxEquilibrio + maxCedo + 1, maxTrilha = pesoTrilha * maxRank * n;
     const pesoQuantidade = maxTrilha + maxEquilibrio + maxCedo + 1;
     const objetivo = [
         ...vars.map(v => termo(pesoQuantidade + pesoTrilha * rank(v.c.d) + urgencia(v.c.d) * v.s, v.nome)),
         termo(pesoEquilibrio, 'L'),
-        ...livres.filter(s => s < K && e.cargaMin > 0).map(s => termo(pesoEquilibrio, `u_${s}`)),
     ];
     const lp = ['Minimize', ` obj: ${expressao(objetivo)}`, 'Subject To', ...linhas, 'Binary', ` ${expressao(binarias)}`, 'End', ''].join('\n');
     return { lp, vars };

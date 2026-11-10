@@ -8,8 +8,10 @@ import { log, iniciarLog, registrarEstado, descreverErro } from './log';
 import { extrairPaginasDoDocumento } from './pdf-extracao';
 import { ehManual } from './requisitos';
 import { carregarSolver } from './solver';
+import { aulasDaGrade, gerarIcs, periodoLetivoEstimado } from './exportar';
 import {
-    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, cursadasComManuais, ofertaDoSemestre, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
+    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, cursadasComManuais, ofertaDoSemestre, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado,
+    dadosConferencia, manuaisPendentesDaLeitura, definirConclusaoManual, definirLancamentoPorFora, prontidaoAtual, sugerirOrdemDasTrilhas
 } from './state';
 
 /* ===================================================================
@@ -20,6 +22,10 @@ const $ = (s: string, r: Document | Element = document): any => r.querySelector(
 const $$ = (s: string, r: Document | Element = document): any[] => [...r.querySelectorAll(s)];
 const root = $('#root');
 const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+/** Aviso com o texto num parágrafo e as ações num bloco separado. `mensagem` e `acoes` já vêm em HTML escapado. */
+function banner(tipo: 'info' | 'warn' | 'ok', mensagem: string, acoes = '', extraClasse = '') {
+    return `<div class="banner ${tipo} ${extraClasse}"><p>${mensagem}</p>${acoes ? `<div class="b-actions">${acoes}</div>` : ''}</div>`;
+}
 
 /* ---------- Ajuda: como exportar os PDFs do Portal do Aluno (slide-over) ---------- */
 function ajudaFig(i) {
@@ -85,6 +91,7 @@ async function extrairPaginas(file, onProg?) {
 let solverPronto = false;
 function render() {
     if (S.fase === 'upload') return renderUpload();
+    if (S.fase === 'conferencia') return renderConferencia();
     if (S.fase === 'divergencias') return renderDivergencias();
     if (S.fase === 'preferencias') return renderPreferencias();
     if (!solverPronto) return renderCarregandoSolver();
@@ -97,72 +104,202 @@ function renderCarregandoSolver() {
         .then(() => { solverPronto = true; render(); })
         .catch(err => {
             log('solver.falha', descreverErro(err), 'error');
-            root.innerHTML = '<div class="welcome"><div class="banner warn"><span class="b-msg">Não foi possível carregar o planejador (HiGHS, WebAssembly). Recarregue a página; se continuar, abra o console do navegador e envie o erro.</span></div></div>';
+            root.innerHTML = `<div class="welcome">${banner('warn', 'Não foi possível carregar o planejador (HiGHS, WebAssembly). Recarregue a página; se continuar, abra o console do navegador e envie o erro.')}</div>`;
         });
 }
 
 /* ---------- Upload ---------- */
+const TIPOS_PDF: [string, string, string][] = [
+    ['matriz', 'Matriz Curricular', 'disciplinas, períodos, pré-requisitos e totais do curso'],
+    ['historico', 'Histórico Escolar', 'o que você já cursou e os resumos oficiais'],
+    ['gnh', 'Turmas Abertas', 'turmas e horários ofertados no semestre'],
+];
+const ETAPAS = ['Envio dos PDFs', 'Conferência', 'Códigos diferentes', 'Preferências', 'Plano'];
+let erroLeitura: { mensagem: string; detalhes: string[] } | null = null;
+let avisosUpload: string[] = [];
+const rotuloOferta = s => s ? `${s.per}º Semestre de ${s.ano}` : 'semestre não identificado no PDF';
+const etapasHTML = () => `<div class="steps">${ETAPAS.map((s, i) => `<div class="step"><b>${i + 1}</b>${s}</div>`).join('')}</div>`;
+
 function renderUpload() {
     const f = S.files;
-    const zonas = [
-        ['matriz', 'Matriz Curricular', '📚', 'Grade do curso: disciplinas, períodos e pré-requisitos.'],
-        ['historico', 'Histórico Escolar', '🎓', 'Disciplinas cursadas, situação e coeficientes.'],
-        ['gnh', 'Turmas Abertas', '🗓️', 'Turmas ofertadas no semestre, com horários, vagas e prioridade de curso.'],
-    ];
+    const prontos = TIPOS_PDF.every(([k]) => f[k]);
+    const erro = erroLeitura
+        ? banner('warn', `${esc(erroLeitura.mensagem)}${erroLeitura.detalhes.length ? `<br>O que não bateu: ${erroLeitura.detalhes.map(esc).join('; ')}.` : ''}`)
+        : '';
     root.innerHTML = `
 <div class="welcome">
-<div class="brand"><div class="logo">C+</div><div><h1>Compass+</h1><div class="muted" style="font-size:13px">Planejamento acadêmico · UTFPR — Sistemas de Informação</div></div></div>
-<p class="sub">Envie os três PDFs do <b>Portal do Aluno</b> (Matriz, Histórico e Turmas Abertas). Tudo é processado <b>localmente no seu navegador</b> — nada é enviado a servidores. <button class="btn btn-sm btn-ghost" id="abrir-ajuda">❓ Como exportar os PDFs</button></p>
-<div class="dropzones">
-    ${zonas.map(([k, t, ic, desc]) => {
-        return `<div class="dz ${f[k] ? 'done' : ''}" data-dz="${k}">
-        <div class="ico">${f[k] ? '✅' : ic}</div>
-        <h3>${t}</h3>
-        ${f[k] ? `<div class="fname">${esc(f[k].name)}</div>` : `<p>${desc}</p>`}
-        <div class="bar"><i data-bar="${k}" style="width:${f[k] ? 100 : 0}%"></i></div>
-        <button class="btn btn-sm btn-ghost" data-pick="${k}">${f[k] ? 'Trocar arquivo' : 'Selecionar PDF'}</button>
-        <input type="file" accept="application/pdf,.pdf" data-input="${k}" class="hidden">
-    </div>`;
-    }).join('')}
+<div class="brand"><div class="logo">C+</div><div><h1>Compass+</h1><div class="muted" style="font-size:13px">Planejamento acadêmico · UTFPR</div></div></div>
+<p class="sub">Envie de uma vez os três PDFs do <b>Portal do Aluno</b>: o app reconhece cada um pelo conteúdo. Tudo é processado <b>localmente no seu navegador</b>. <button class="btn btn-sm btn-ghost" id="abrir-ajuda">❓ Como exportar os PDFs</button></p>
+${erro}
+${avisosUpload.map(a => banner('warn', esc(a))).join('')}
+<div class="dz unico" data-dz="pdfs">
+    <h3>Solte aqui os 3 PDFs</h3>
+    <p>Matriz Curricular, Histórico Escolar e Turmas Abertas, em qualquer ordem.</p>
+    <button class="btn btn-sm btn-ghost" data-escolher-pdfs>Selecionar PDFs</button>
+    <input type="file" accept="application/pdf,.pdf" multiple data-input="pdfs" class="hidden">
 </div>
+<ul class="pdfs-lidos">${TIPOS_PDF.map(([k, titulo, desc]) => `<li class="${f[k] ? 'done' : ''}"><b>${titulo}</b> <span class="muted">${f[k] ? `${esc(f[k].name)}${k === 'gnh' ? ` · ${esc(rotuloOferta(f[k].semestre))}` : ''}` : `aguardando — ${desc}`}</span></li>`).join('')}</ul>
 <div class="actions">
-    <button class="btn btn-primary" id="processar" ${(!f.matriz || !f.historico || !f.gnh) ? 'disabled' : ''}>Processar e planejar →</button>
+    <button class="btn btn-primary" id="processar" ${prontos ? '' : 'disabled'}>Ler e conferir →</button>
     <span class="muted" id="proc-status"></span>
     ${localStorage.getItem('compass_state') ? '<button class="btn btn-ghost" id="restaurar">Restaurar sessão salva</button>' : ''}
 </div>
-<div class="steps">
-    ${['Upload dos PDFs', 'Resolução de divergências', 'Preferências', 'Planejamento'].map((s, i) => `<div class="step"><b>${i + 1}</b>${s}</div>`).join('')}
+${etapasHTML()}
+</div>`;
+}
+
+/** Lê cada PDF solto ou escolhido e o guarda como matriz, histórico ou turmas, pelo conteúdo da primeira página. */
+async function receberArquivos(files: FileList | File[]) {
+    erroLeitura = null; avisosUpload = [];
+    for (const file of Array.from(files)) {
+        if (!/pdf/i.test(file.type) && !/\.pdf$/i.test(file.name)) { avisosUpload.push(`“${file.name}” não é um PDF.`); continue; }
+        const st = $('#proc-status'); if (st) st.textContent = `Lendo ${file.name}…`;
+        try {
+            const pages = await extrairPaginas(file);
+            const tipo = K.identificarPdf(pages);
+            if (!tipo) { avisosUpload.push(`Não reconheci “${file.name}” como Matriz Curricular, Histórico Escolar ou Turmas Abertas.`); continue; }
+            S.files[tipo] = { name: file.name, size: file.size, pages, semestre: tipo === 'gnh' ? K.semestreDaOferta(pages) : null };
+            log('pdf.identificado', { arquivo: `${file.name} (${file.size} bytes)`, tipo, paginas: pages.length });
+        } catch (err) {
+            avisosUpload.push(`Não consegui abrir “${file.name}”: o PDF pode estar corrompido ou sem texto selecionável.`);
+            log('pdf.identificar.falha', { arquivo: file.name, ...descreverErro(err) }, 'error');
+        }
+    }
+    renderUpload();
+}
+
+/* ---------- Conferência da leitura + perguntas iniciais ---------- */
+const MAX_SEMESTRE_PERGUNTA = 8;
+function opcoesDeSemestre(selecionado: number | null, incluirNaoSei: boolean) {
+    const opcoes = Array.from({ length: MAX_SEMESTRE_PERGUNTA + 1 }, (_, i) => `<option value="${i}" ${selecionado === i ? 'selected' : ''}>${i === 0 ? `até ${rotuloSem(0)} (já feito ou em andamento)` : `em ${rotuloSem(i)}`}</option>`);
+    return (incluirNaoSei ? [`<option value="" ${selecionado == null ? 'selected' : ''}>ainda não sei</option>`] : []).concat(opcoes).join('');
+}
+const FORMAS_ESTAGIO: [string, string][] = [['regular', 'estágio regular'], ['atividade-profissional', 'por atividade profissional'], ['extensao', 'por extensão / empresa júnior']];
+/** Explicação do período mostrado pelo sistema (retenção por aulas semanais faltantes). */
+function explicacaoPeriodo(aluno) {
+    const r = aluno.retencao;
+    if (!r) return `O período vem do histórico. Ele depende das aulas semanais que faltam, não do tempo de curso, e não muda o plano: o que conta para a formatura são os requisitos.`;
+    return `O sistema da UTFPR não avança o período enquanto faltarem ${r.limite} aulas semanais ou mais (obrigatórias + optativas acumuladas). Você tem ${String(r.aulasFaltantes).replace('.', ',')} aulas faltantes, por isso aparece no ${r.periodo}º período. Isso não muda o plano: o que conta para a formatura são os requisitos.`;
+}
+function linhaConferenciaHTML([rotulo, total, cursada, faltante, oficial]) {
+    const diverge = oficial != null && oficial !== faltante;
+    return `<tr class="${faltante === 0 ? 'done' : ''} ${diverge ? 'diverge' : ''}"><td>${esc(rotulo)}</td><td>${total}h</td><td>${cursada}h</td><td>${faltante === 0 ? '✓' : faltante + 'h'}</td><td>${oficial == null ? '—' : oficial + 'h'}${diverge ? ' <b>≠</b>' : ''}</td></tr>`;
+}
+function renderConferencia() {
+    const c = dadosConferencia();
+    const s = c.situacao, rg = c.historico.resumoGeral, ro = c.historico.resumoOptativas;
+    const faltanteOficial = id => { const x = ro && ro.conjuntos.find(k => k.id === id); return x ? x.chFaltante : null; };
+    const linhas = [
+        ['Obrigatórias', s.obrigatorias.total, s.obrigatorias.cursada, s.obrigatorias.faltante, rg && rg.obrigatorias ? rg.obrigatorias.faltante : null],
+        ...s.conjuntos.map(k => [`${k.nome} [${k.id}]`, k.total, k.cursada, k.faltante, faltanteOficial(k.id)]),
+        ...(s.trilhas ? [[`${s.trilhas.nome} [${s.trilhas.id}] · ${s.trilhas.validadas}/${s.trilhas.minimoValidadas} subáreas validadas`, s.trilhas.total, s.trilhas.cursada, s.trilhas.faltante, faltanteOficial(s.trilhas.id)]] : []),
+        ['Eletivas', s.eletivas.total, s.eletivas.cursada, s.eletivas.faltante, c.historico.resumoEletiva ? c.historico.resumoEletiva.faltante : null],
+        ['Extensão', s.extensao.total, s.extensao.cursada, s.extensao.faltante, rg && rg.extensao ? rg.extensao.faltante : null],
+    ];
+    const m = S.manuais;
+    const manuais = manuaisPendentesDaLeitura().map(d => {
+        const quando = m.estagios[d.codigo] == null ? null : +m.estagios[d.codigo];
+        const estagio = /EST[ÁA]GIO/i.test(d.modeloDisciplina);
+        const forma = (m.formas || {})[d.codigo] || 'regular';
+        return `<div class="pergunta"><div><b>${esc(d.nome)}</b> <span class="muted mono">${esc(d.codigo)} · ${d.chTotal}h</span></div>
+    <label>Concluo/valido <select data-manual-quando="${esc(d.codigo)}">${opcoesDeSemestre(quando, true)}</select></label>
+    ${estagio ? `<label>Como <select data-manual-forma="${esc(d.codigo)}">${FORMAS_ESTAGIO.map(([v, t]) => `<option value="${v}" ${forma === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>` : ''}</div>`;
+    }).join('');
+    const porFora = (chave, titulo, ajuda) => {
+        const porSem = (m[chave] && m[chave].porSem) || {};
+        const idx = Object.keys(porSem).length ? Math.max(...Object.keys(porSem).map(Number)) : 0;
+        const horas = somaManualAteSem(m[chave], Infinity);
+        return `<div class="pergunta"><div><b>${titulo}</b> <span class="muted">${ajuda}</span></div>
+    <label><input type="number" min="0" max="999" value="${horas || ''}" placeholder="0" data-porfora="${chave}"> horas</label>
+    <label>contando <select data-porfora-sem="${chave}">${opcoesDeSemestre(idx, false)}</select></label></div>`;
+    };
+    root.innerHTML = `
+<div class="pref-screen">
+<div class="brand"><div class="logo">C+</div><div><h1>Conferência</h1><div class="muted" style="font-size:13px">Confira o que o app leu dos seus PDFs antes de calcular.</div></div></div>
+<div class="card conferencia-aluno">
+    <div><span class="muted">Aluno</span> <b>${esc(c.aluno.nome)}</b></div>
+    <div><span class="muted">Curso</span> ${esc(c.aluno.curso)}</div>
+    <div><span class="muted">Matriz</span> ${esc(c.aluno.matriz)}</div>
+    <div><span class="muted">Período no sistema</span> ${c.aluno.periodoAtual}º <span class="q-help" data-tip="${esc(explicacaoPeriodo(c.aluno))}">?</span></div>
+    <div><span class="muted">Turmas Abertas</span> ${esc(c.oferta ? rotuloOferta({ ano: +c.oferta.split('/')[0], per: +c.oferta.split('/')[1] }) : 'semestre não identificado')}</div>
 </div>
+${c.divergencias.length ? banner('warn', `O cálculo do app não bate com o histórico: ${c.divergencias.map(d => `${esc(d.requisito)} — app ${d.app}, histórico ${d.historico}`).join('; ')}. Confira se os PDFs são os mais recentes.`) : banner('ok', 'As horas calculadas pelo app batem com os resumos do histórico.')}
+<table class="htable conferencia"><thead><tr><th>Requisito</th><th>Total</th><th>Cursado</th><th>Falta</th><th>Falta (histórico)</th></tr></thead>
+<tbody>${linhas.map(linhaConferenciaHTML).join('')}</tbody></table>
+<p class="muted">Só as disciplinas aprovadas. Em andamento em ${esc(rotuloSem(0))} (contam a partir de ${esc(rotuloSem(1))}): ${c.emAndamento.map(d => `${esc(d.codigo)} ${esc(d.nome)}`).join(' · ') || 'nenhuma'}.</p>
+<h2 class="perguntas-titulo">Antes de calcular</h2>
+${manuais}
+${porFora('extensao', 'Horas de extensão feitas por fora', 'empresa júnior, projetos, atividades curriculares de extensão (CCE)')}
+${porFora('eletiva', 'Eletivas feitas por fora', 'disciplinas de outros cursos que contam como eletivas')}
+<p class="muted">O ENADE de concluinte é só um lembrete: não muda o semestre de formatura. Você marca quando fizer, na barra lateral do plano.</p>
+<div class="actions"><button class="btn btn-primary" id="conf-continuar">Continuar →</button><button class="btn btn-ghost" id="voltar-upload">← Voltar</button></div>
+${etapasHTML()}
 </div>`;
 }
 
 /* ---------- Divergências (Módulo 1.5) ---------- */
+function divergenciaHTML(d, matrizAluno) {
+    const escolha = (S.divergEscolhas || {})[d.gnhCod] || d.padrao || 'nao';
+    const listadas = d.matrizesListadas || [];
+    const explicacao = d.listaMatriz
+        ? `A turma aparece como optativa da sua matriz (${matrizAluno}) na coluna “Optativa (Observar Equivalências)”.`
+        : `Nenhuma turma de ${d.gnhCod} lista a sua matriz (${matrizAluno || '—'}) na coluna “Optativa (Observar Equivalências)”${listadas.length ? ` — ela aparece para as matrizes ${listadas.join(', ')}` : ''}. Provavelmente é uma disciplina de outro curso com o mesmo nome e não vale para o seu.`;
+    return `<div class="card diverg">
+    <div><b class="mono">${esc(d.gnhCod)}</b> ${esc(d.gnhNome)} <span class="muted">nas Turmas Abertas</span></div>
+    <div><b class="mono">${esc(d.matrizCod)}</b> ${esc(d.matrizNome)} <span class="muted">na sua matriz · nomes ${Math.round(d.score * 100)}% parecidos</span></div>
+    <p class="muted">${esc(explicacao)}</p>
+    <span class="segbtn" role="group" aria-label="${esc(d.gnhCod)} é a mesma disciplina que ${esc(d.matrizCod)}?">
+        <button class="seg ${escolha === 'sim' ? 'on' : ''}" aria-pressed="${escolha === 'sim'}" data-div-escolha="${esc(d.gnhCod)}" data-valor="sim">Sim, é a mesma</button>
+        <button class="seg ${escolha === 'nao' ? 'on' : ''}" aria-pressed="${escolha === 'nao'}" data-div-escolha="${esc(d.gnhCod)}" data-valor="nao">Não, são diferentes</button>
+    </span>
+</div>`;
+}
 function renderDivergencias() {
-    const d = S.divergPendentes[0];
-    if (!d) { S.fase = 'preferencias'; salvar(); return render(); }
-    const total = S.divergTotal || S.divergPendentes.length;
-    const atual = total - S.divergPendentes.length + 1;
+    const lista = S.divergPendentes || [];
+    if (!lista.length) { S.fase = 'preferencias'; salvar(); return render(); }
+    const matrizAluno = S.parsed.historico.aluno.matrizCodigo;
     root.innerHTML = `
-<div class="overlay"><div class="modal">
-<div class="diverg-progress">Divergência ${atual} de ${total}</div>
-<h2>Confirme a equivalência de disciplina</h2>
-<div class="q"><b>“${esc(d.gnhNome)}”</b> aparece nas Turmas Abertas com o código <b class="mono">${esc(d.gnhCod)}</b>,
-    mas na matriz como <b class="mono">${esc(d.matrizCod)}</b> (<b>${esc(d.matrizNome)}</b>).<br>
-    Similaridade de nome: <b>${Math.round(d.score * 100)}%</b>. São a mesma disciplina?</div>
-<div class="row">
-    <button class="btn btn-ghost" data-div="no">✗ Não, são diferentes</button>
-    <button class="btn btn-primary" data-div="yes">✓ Sim, mesma disciplina</button>
-</div>
-</div></div>`;
+<div class="pref-screen">
+<div class="brand"><div class="logo">C+</div><div><h1>Códigos diferentes</h1><div class="muted" style="font-size:13px">${lista.length} turma(s) das Turmas Abertas com código fora da sua matriz e nome parecido com uma disciplina dela.</div></div></div>
+<p class="sub">Diga quais são a mesma disciplina. As marcadas “Sim” passam a usar as turmas desse código; as marcadas “Não” são ignoradas.</p>
+<div class="diverg-lista">${lista.map(d => divergenciaHTML(d, matrizAluno)).join('')}</div>
+<div class="actions"><button class="btn btn-primary" id="div-confirmar">Confirmar e continuar →</button><button class="btn btn-ghost" id="voltar-conferencia">← Voltar</button></div>
+${etapasHTML()}
+</div>`;
 }
 
 /* ---------- Preferências (Módulo 2) ---------- */
 // cards de preferências (campus, turnos, carga, trilhas) — reutilizados na tela de onboarding
 // e no slide-over de preferências dentro do app.
+const opcoesDeSlot = (selecionado: string) => K.ORDEM_SLOTS.map(([per, s]) => `<option value="${per}${s}" ${selecionado === per + s ? 'selected' : ''}>${per}${s} · ${K.slotTexto(per, s)}</option>`).join('');
+function textoProntidao(t) {
+    if (t.materiasParaValidar === 0) return 'já validada';
+    const liberadas = t.liberadas.length ? `${t.liberadas.length} liberada(s) no seu horário, ${t.horasLiberadas} h` : 'nenhuma matéria liberada no seu horário';
+    return Number.isFinite(t.materiasParaValidar) ? `${t.materiasParaValidar} matéria(s) validam · ${liberadas}` : `faltam ${t.faltaValidar} h · ${liberadas}`;
+}
+/** Trilhas na ordem de preferência, com a prontidão de cada uma; pede a escolha quando as mais prontas empatam. */
+function trilhasCardHTML(p) {
+    sugerirOrdemDasTrilhas();
+    const { lista, empate } = prontidaoAtual();
+    const porId = new Map(lista.map((t): [string, typeof t] => [t.id, t]));
+    const ordem = [...p.preferenciaTrilhas.filter(id => porId.has(id)), ...lista.map(t => t.id).filter(id => !p.preferenciaTrilhas.includes(id))];
+    const pedeEscolha = empate.length > 1 && !p.trilhasConfirmadas;
+    const aviso = pedeEscolha
+        ? banner('warn', `${empate.length} trilhas estão igualmente prontas (marcadas abaixo). Coloque-as na ordem que você prefere e confirme.`, '<button class="btn btn-sm btn-primary" data-trilhas-confirmar>Usar esta ordem</button>')
+        : p.trilhasConfirmadas
+            ? '<div class="hint" style="margin-top:0;margin-bottom:10px">Ordem escolhida por você. <button class="btn btn-sm btn-ghost" data-trilhas-sugerir>Voltar à sugestão</button></div>'
+            : '<div class="hint" style="margin-top:0;margin-bottom:10px">Sugestão: das mais prontas (pré-requisitos cumpridos e turmas no seu horário) para as menos. Arraste ou use ↑ ↓ para mudar.</div>';
+    return `<div class="card trilhas-card">
+    <h3>🧭 Preferência de trilhas (Terceiro Estrato)</h3>
+    ${aviso}
+    <ol class="trilha-list" id="trilhas">
+        ${ordem.map((id, i) => { const t = porId.get(id); return `<li data-id="${id}" class="${empate.includes(id) ? 'empate' : ''}"><span class="rank">${i + 1}</span><span class="tnome">${esc(t.nome)}<span class="tinfo">${esc(textoProntidao(t))}</span></span><span class="tmover"><button class="btn btn-sm btn-ghost" data-trilha-mover="${id}" data-dir="-1" aria-label="Subir ${esc(t.nome)}" ${i === 0 ? 'disabled' : ''}>↑</button><button class="btn btn-sm btn-ghost" data-trilha-mover="${id}" data-dir="1" aria-label="Descer ${esc(t.nome)}" ${i === ordem.length - 1 ? 'disabled' : ''}>↓</button></span><span class="grip" aria-hidden="true">⋮⋮</span></li>`; }).join('')}
+    </ol>
+    </div>`;
+}
+const precisaEscolherTrilhas = () => prontidaoAtual().empate.length > 1 && !S.preferencias.trilhasConfirmadas;
 function prefsGridHTML(p) {
-    const subareas = (S.parsed.matriz && S.parsed.matriz.subareas) || {};
-    if (!p.preferenciaTrilhas.length) p.preferenciaTrilhas = Object.keys(subareas);
-    const trilhas = p.preferenciaTrilhas.filter(id => subareas[id]);
+    const janela = p.janela || K.JANELA_INTEIRA;
     return `<div class="pref-grid">
     <div class="card">
     <h3>🏫 Campus</h3>
@@ -176,22 +313,18 @@ function prefsGridHTML(p) {
     <div class="checks">
         ${[['M', 'Manhã'], ['T', 'Tarde'], ['N', 'Noite']].map(([k, t]) => `<div class="check ${p.turnos.includes(k) ? 'on' : ''}" data-turno="${k}">${t} (${k})</div>`).join('')}
     </div>
-    <div class="hint">Selecione ao menos um turno.</div>
+    <div class="janela">
+        <label>Aulas a partir de <select data-janela="inicio">${opcoesDeSlot(janela.inicio)}</select></label>
+        <label>até <select data-janela="fim">${opcoesDeSlot(janela.fim)}</select></label>
+    </div>
+    <div class="hint">Uma turma só entra se todos os horários dela couberem nos turnos e na janela. Quem trabalha de manhã costuma aceitar o fim da tarde, mas não o início.</div>
     </div>
     <div class="card">
     <h3>📦 Carga por semestre</h3>
-    <div class="spread"><span class="muted">Mínimo</span><span class="bignum" id="lbl-min">${p.cargaMin}</span></div>
-    <input type="range" min="1" max="10" value="${p.cargaMin}" data-range="cargaMin" style="width:100%">
-    <div class="spread" style="margin-top:10px"><span class="muted">Máximo</span><span class="bignum" id="lbl-max">${p.cargaMax}</span></div>
-    <input type="range" min="1" max="10" value="${p.cargaMax}" data-range="cargaMax" style="width:100%">
+    <label class="carga-max">No máximo <input type="number" min="1" max="10" value="${p.cargaMax}" data-pref-num="cargaMax"> matérias por semestre</label>
+    <div class="hint">O TCC conta. O plano nunca põe uma matéria que não reduz algum requisito só para encher o semestre.</div>
     </div>
-    <div class="card">
-    <h3>🧭 Preferência de trilhas (Terceiro Estrato)</h3>
-    <div class="hint" style="margin-top:0;margin-bottom:10px">Arraste para ordenar (1 = mais preferida). Usado para desempatar grades.</div>
-    <ul class="trilha-list" id="trilhas">
-        ${trilhas.map((id, i) => `<li data-id="${id}"><span class="rank">${i + 1}</span><span>${esc(subareas[id])}</span><span class="mono muted" style="font-size:11px">[${id}]</span><span class="grip">⋮⋮</span></li>`).join('')}
-    </ul>
-    </div>
+    ${trilhasCardHTML(p)}
 </div>`;
 }
 function renderPreferencias() {
@@ -199,20 +332,25 @@ function renderPreferencias() {
     // completo. O trabalho é previsto sobre uma grade vazia; após "Calcular grades" ele se molda à grade.
     const sem = { idx: 1, rotulo: rotuloSem(1), bloqueios: manualBlocos(1), trab: trabCalc(1, []) };
     const trabOK = trabRespondido(1);   // preenchimento obrigatório: precisa ter respondido (e aplicado)
+    const grade = prefsGridHTML(S.preferencias);
+    const escolherTrilhas = precisaEscolherTrilhas();
+    const pendencia = !trabOK ? 'Responda sobre seu trabalho em “Horários travados” (e clique em Aplicar) para continuar.'
+        : escolherTrilhas ? 'Escolha a ordem das trilhas empatadas (e clique em “Usar esta ordem”) para continuar.' : '';
     root.innerHTML = `
 <div class="pref-screen">
 <div class="brand"><div class="logo">C+</div><div><h1>Preferências</h1><div class="muted" style="font-size:13px">Ajuste antes de calcular as grades. Você pode alterar depois na barra lateral.</div></div></div>
-${prefsGridHTML(S.preferencias)}
+${grade}
 <div class="pref-trab">
     <h2 style="font-size:16px;margin:26px 0 4px">🔒 Horários travados <span class="chip" style="color:var(--secondary)">obrigatório</span></h2>
     <p class="muted" style="font-size:13px;margin:0 0 4px">Informe se você trabalha neste semestre (e o horário). As grades são calculadas ao redor disso. Depois, você edita no plano do semestre.</p>
     ${blocosSemestreHTML(sem, true)}
 </div>
 <div class="actions" style="margin-top:22px;display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-    <button class="btn btn-primary" id="ir-app" ${trabOK ? '' : 'disabled data-tip="Responda sobre seu trabalho em &quot;Horários travados&quot; e clique em Aplicar"'}>Calcular grades →</button>
-    <button class="btn btn-ghost" id="voltar-upload">← Voltar</button>
-    ${trabOK ? '' : '<span class="muted" style="color:var(--secondary);font-size:12px">⚠ Responda sobre seu trabalho acima (e clique em <b>Aplicar</b>) para continuar.</span>'}
+    <button class="btn btn-primary" id="ir-app" ${pendencia ? `disabled data-tip="${esc(pendencia)}"` : ''}>Calcular o plano →</button>
+    <button class="btn btn-ghost" id="voltar-conferencia">← Voltar</button>
+    ${pendencia ? `<span class="muted" style="color:var(--secondary);font-size:12px">⚠ ${esc(pendencia)}</span>` : ''}
 </div>
+${etapasHTML()}
 </div>`;
     initTrilhasDrag();
 }
@@ -364,7 +502,8 @@ function initTrilhasDrag() {
         animation: 150, handle: '.grip', ghostClass: 'sortable-ghost',
         onEnd() {
             S.preferencias.preferenciaTrilhas = $$('#trilhas li').map(li => li.dataset.id);
-            $$('#trilhas .rank').forEach((r, i) => r.textContent = i + 1); salvar();
+            S.preferencias.trilhasConfirmadas = true;
+            refreshPrefs();
         }
     });
 }
@@ -674,7 +813,7 @@ function renderApp() {
 <div class="meta">
     <div class="stat"><b>${(al.coeficienteAbsoluto || 0).toFixed(4)}</b><span>Coef. absoluto</span></div>
     <div class="stat"><b>${proj.length - 1}</b><span>Semestres projetados</span></div>
-    <div class="stat"><b>${D.hist.aluno.periodoAtual}º</b><span>Período atual</span></div>
+    <div class="stat"><b>${al.periodoAtual}º</b><span>Período no sistema <span class="q-help" data-tip="${esc(explicacaoPeriodo(al))}">?</span></span></div>
     <button class="btn btn-sm btn-ghost" data-editar-pref>⚙️ Preferências</button>
     <button class="btn btn-sm btn-ghost" id="ver-grafo">🗺️ Grafo de matérias</button>
     <button class="btn btn-sm btn-danger" id="reiniciar">Reiniciar tudo</button>
@@ -683,12 +822,40 @@ function renderApp() {
 <div class="layout">
 <aside class="sidebar ${S.sidebarCollapsed ? 'collapsed' : ''}" id="sidebar">${sidebarHTML(sem)}</aside>
 <main class="main">
+    ${respostaHTML(proj)}
     <div class="tabs">${proj.map((s, i) => tabHTML(s, i)).join('')}</div>
     ${semestreHTML(sem)}
 </main>
 </div>
 ${S.prefsOpen ? prefsOverlayHTML() : ''}`;
     if (S.prefsOpen) initTrilhasDrag();   // Sortable precisa reanexar ao <ul> recriado
+}
+
+/** Topo do plano: quando forma, em quantos semestres e com quantas matérias, e o que falta em cada requisito. */
+function respostaHTML(proj) {
+    const ultimo = proj[proj.length - 1];
+    const futuros = proj.filter(s => s.idx > 0);
+    const materias = futuros.reduce((a, s) => a + s.grade.sel.filter(x => !x.bloqueado).length, 0);
+    const semestres = futuros.filter(s => s.grade.sel.length).length;
+    const titulo = ultimo.cursoImpossivel ? 'Sem solução com as restrições atuais'
+        : ultimo.formatura ? `Formatura prevista: ${ultimo.rotulo}`
+            : ultimo.quaseFormatura ? `Matérias concluídas em ${ultimo.rotulo}`
+                : `Plano até ${ultimo.rotulo}`;
+    const detalhe = ultimo.cursoImpossivel ? `veja o motivo na aba ${ultimo.rotulo}` : `${semestres} semestre(s) · ${materias} matéria(s)`;
+    const f = D.faltaInicial;
+    const obrigatoriasFaltando = [...f.obrigatorias.pendentes, ...f.obrigatorias.manuaisPendentes].map(c => (D.byCod.get(c) || {}).nome || c);
+    const itens: [string, string | null][] = [
+        ['Obrigatórias', obrigatoriasFaltando.length ? obrigatoriasFaltando.join(', ') : null],
+        ...f.conjuntos.map((c): [string, string | null] => [c.nome, c.ok ? null : `${c.faltante} h`]),
+        ...(f.trilhas ? [['Trilhas', f.trilhas.ok ? null : `${f.trilhas.validadas}/${f.trilhas.minimoValidadas} subáreas, ${f.trilhas.faltante} h ou mais`] as [string, string | null]] : []),
+        ['Extensão', f.extensao.ok ? null : `${f.extensao.faltante} h`],
+        ['Eletivas', f.eletivas.ok ? null : `${f.eletivas.faltante} h`],
+    ];
+    return `<section class="resposta">
+<div class="resposta-titulo"><h2>${esc(titulo)}</h2><span class="muted">${esc(detalhe)}</span></div>
+<div class="resposta-faltas"><span class="muted">Falta, contando o que você cursa agora e o que lançou por fora:</span> ${itens.map(([r, v]) => `<span class="falta ${v ? '' : 'ok'}">${esc(r)}: ${v ? esc(v) : '✓'}</span>`).join('')}</div>
+${ultimo.quaseFormatura ? '<p class="muted">Faltam itens que você marca na barra lateral: estágios, extensão ou eletivas feitas por fora.</p>' : ''}
+</section>`;
 }
 
 function sidebarHTML(sem) {
@@ -706,7 +873,7 @@ function sidebarHTML(sem) {
     const trilhaRows = t ? t.subareas.filter(s => s.cursada > 0 || S.preferencias.preferenciaTrilhas.indexOf(s.id) < t.minimoValidadas)
         .map(s => `<tr class="sub2 ${s.validada ? 'done' : ''}"><td>↳ ${esc(s.nome)} ${s.validada ? '<span style="color:var(--success)">✓</span>' : ''}</td><td>${s.total}h</td><td>${s.faltante}h</td></tr>`).join('') : '';
     const divergencias = D.divergenciasHistorico || [];
-    const avisoDivergencia = divergencias.length ? `<div class="banner warn"><span class="b-msg">⚠ O cálculo do app não bate com o histórico: ${divergencias.map(d => `${esc(d.requisito)} — app ${d.app}, histórico ${d.historico}`).join('; ')}. Confira se os PDFs são os mais recentes.</span></div>` : '';
+    const avisoDivergencia = divergencias.length ? banner('warn', `⚠ O cálculo do app não bate com o histórico: ${divergencias.map(d => `${esc(d.requisito)} — app ${d.app}, histórico ${d.historico}`).join('; ')}. Confira se os PDFs são os mais recentes.`) : '';
     return `
 <div class="side-sec">
 ${avisoDivergencia}
@@ -727,8 +894,8 @@ ${manuaisHTML(sem)}
 </div>
 <div class="side-sec">
 <h4>⚙️ Preferências</h4>
-<button class="btn btn-sm btn-ghost" data-editar-pref style="width:100%">Editar campus, turnos, faixa e bloqueios</button>
-<div class="muted" style="font-size:11px;margin-top:8px">Campus: ${S.preferencias.campusUnico ? S.preferencias.campus : 'Qualquer'} · Turnos: ${S.preferencias.turnos.join(' ')} · Carga: ${S.preferencias.cargaMin}–${S.preferencias.cargaMax} · Bloqueios: ${totalBloqueios()}</div>
+<button class="btn btn-sm btn-ghost" data-editar-pref style="width:100%">Editar campus, turnos, horário, carga e trilhas</button>
+<div class="muted" style="font-size:11px;margin-top:8px">Campus: ${S.preferencias.campusUnico ? S.preferencias.campus : 'Qualquer'} · Turnos: ${S.preferencias.turnos.join(' ')} · Aulas de ${(S.preferencias.janela || K.JANELA_INTEIRA).inicio} a ${(S.preferencias.janela || K.JANELA_INTEIRA).fim} · Carga máx.: ${S.preferencias.cargaMax} · Bloqueios: ${totalBloqueios()}</div>
 </div>`;
 }
 
@@ -809,11 +976,41 @@ function semestreHTML(sem) {
     return planoSemestreHTML(sem);
 }
 
+/* ---------- Exportar a grade do semestre como calendário (.ics) ---------- */
+let icsAberto: number | null = null;
+const temAulasComHorario = sem => sem.grade.sel.some(s => !s.bloqueado && (s.horarios || []).length);
+const botaoIcs = sem => temAulasComHorario(sem) ? `<button class="btn btn-sm btn-ghost" data-ics-abrir="${sem.idx}" aria-expanded="${icsAberto === sem.idx}">Exportar .ics</button>` : '';
+function formIcsHTML(sem) {
+    if (icsAberto !== sem.idx) return '';
+    const [ano, per] = sem.rotulo.split('/').map(Number);
+    const p = periodoLetivoEstimado(ano, per);
+    return `<div class="ics-form">
+    <label>Início das aulas <input type="date" value="${p.inicio}" data-ics-inicio></label>
+    <label>Fim das aulas <input type="date" value="${p.fim}" data-ics-fim></label>
+    <span class="muted">Datas estimadas: confira no calendário acadêmico da UTFPR.</span>
+    <button class="btn btn-sm btn-primary" data-ics-baixar="${sem.idx}">Baixar .ics</button>
+    <button class="btn btn-sm btn-ghost" data-ics-fechar>Cancelar</button>
+</div>`;
+}
+function baixarIcs(semIdx: number) {
+    const sem = D.projecao.find(s => s.idx === semIdx); if (!sem) return;
+    const inicio = ($('[data-ics-inicio]') || {}).value, fim = ($('[data-ics-fim]') || {}).value;
+    if (!inicio || !fim || fim < inicio) { toast('Informe o início e o fim das aulas (o fim depois do início).'); return; }
+    const aulas = aulasDaGrade(sem.grade.sel);
+    const url = URL.createObjectURL(new Blob([gerarIcs(aulas, { inicio, fim }, sem.rotulo)], { type: 'text/calendar;charset=utf-8' }));
+    const a = document.createElement('a'); a.href = url; a.download = `compass-${sem.rotulo.replace('/', '-')}.ics`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    log('exportar.ics', { semestre: sem.rotulo, aulas: aulas.length, inicio, fim });
+    icsAberto = null; toast(`Calendário de ${sem.rotulo} baixado: ${aulas.length} aula(s) por semana.`); render();
+}
+
 function semAtualHTML(sem) {
     const sel = sem.grade.sel;
     return `
-<div class="sem-head"><h2>${sem.rotulo} — Semestre atual</h2><span class="chip" style="color:var(--secondary)">Em andamento</span></div>
-<div class="banner info"><span class="b-msg">ℹ️ Estas são suas disciplinas matriculadas em ${sem.rotulo} (histórico). Elas aparecem como <b>em andamento</b> e não são editáveis. A projeção dos próximos semestres assume que serão aprovadas.</span></div>
+<div class="sem-head"><h2>${sem.rotulo} — Semestre atual</h2><div class="flx"><span class="chip" style="color:var(--secondary)">Em andamento</span>${botaoIcs(sem)}</div></div>
+${formIcsHTML(sem)}
+${banner('info', `ℹ️ Estas são suas disciplinas matriculadas em ${sem.rotulo} (histórico). Elas aparecem como <b>em andamento</b> e não são editáveis. A projeção dos próximos semestres assume que serão aprovadas.`)}
 <div class="gcard open"><div class="gh"><div><div class="gtitle">Disciplinas em andamento</div><div class="gsub">${sel.length} disciplinas · ${sel.reduce((a, s) => a + (s.disciplina.chSemanal || 0), 0)} aulas/sem</div></div></div>
 <div class="gbody">${sel.map(s => discRowHTML(s)).join('')}</div></div>
 ${calendarHTML(sem, sel)}
@@ -824,14 +1021,14 @@ function planoSemestreHTML(sem) {
     const escolhida = sem.grade;
     const banners = [];
     const of = sem.oferta;
-    if (of && of.estimada) banners.push(`<div class="banner warn"><span class="b-msg">⚠ Oferta estimada a partir de <b>${esc(of.rotulo)}</b>: as turmas e os horários de ${esc(sem.rotulo)} podem mudar. Quando sair a oferta de ${esc(sem.rotulo)} (ou de outro semestre com a mesma paridade), carregue as Turmas Abertas dela.</span> <span class="b-actions"><button class="btn btn-sm btn-ghost" data-carregar-oferta="${sem.idx}">Carregar Turmas Abertas de outro semestre</button></span></div>`);
-    else if (of) banners.push(`<div class="banner info"><span class="b-msg">ℹ Oferta de ${esc(of.rotulo)} lida das Turmas Abertas.</span></div>`);
+    if (of && of.estimada) banners.push(banner('warn', `⚠ Oferta estimada a partir de <b>${esc(of.rotulo)}</b>: as turmas e os horários de ${esc(sem.rotulo)} podem mudar. Quando sair a oferta de ${esc(sem.rotulo)} (ou de outro semestre com a mesma paridade), carregue as Turmas Abertas dela.`, `<button class="btn btn-sm btn-ghost" data-carregar-oferta="${sem.idx}">Carregar Turmas Abertas de outro semestre</button>`));
+    else if (of) banners.push(banner('info', `ℹ Oferta de ${esc(of.rotulo)} lida das Turmas Abertas.`));
     const fp = sem.filtroPrefs;
     if (fp && fp.descartadas.length) {
         const p = S.preferencias;
         const j = p.janela || K.JANELA_INTEIRA;
         const nomes = fp.descartadas.map(c => `${c} — ${(D.byCod.get(c) || {}).nome || ''}`).join('\\n');
-        banners.push(`<div class="banner info"><span class="b-msg">ℹ ${fp.descartadas.length} matéria(s) já liberada(s) e ofertada(s) ficaram de fora de ${sem.rotulo} pelo filtro de turno/campus/horário (turnos: ${p.turnos.join(' ')} · aulas de ${esc(j.inicio)} a ${esc(j.fim)} · campus: ${p.campusUnico ? esc(p.campus) : 'qualquer'}) — sem o filtro seriam <b>${fp.semFiltro}</b> candidatas em vez de <b>${fp.candidatas}</b>. Uma turma só entra se <b>todos</b> os horários dela couberem no filtro.</span> <span class="b-actions"><button class="btn btn-sm btn-ghost" data-editar-pref data-tip="${esc(nomes)}">⚙️ Ajustar preferências</button></span></div>`);
+        banners.push(banner('info', `ℹ ${fp.descartadas.length} matéria(s) já liberada(s) e ofertada(s) ficaram de fora de ${sem.rotulo} pelo filtro de turno/campus/horário (turnos: ${p.turnos.join(' ')} · aulas de ${esc(j.inicio)} a ${esc(j.fim)} · campus: ${p.campusUnico ? esc(p.campus) : 'qualquer'}) — sem o filtro seriam <b>${fp.semFiltro}</b> candidatas em vez de <b>${fp.candidatas}</b>. Uma turma só entra se <b>todos</b> os horários dela couberem no filtro.`, `<button class="btn btn-sm btn-ghost" data-editar-pref data-tip="${esc(nomes)}">⚙️ Ajustar preferências</button>`));
     }
     // rascunho banner
     const blocos = sem.bloqueios || [];
@@ -839,14 +1036,15 @@ function planoSemestreHTML(sem) {
     rasc.forEach(s => {
         const blkSlots = s.horarios.filter(h => blocos.some(b => b.diaSemana === h.diaSemana && b.periodo === h.periodo && b.slot === h.slot));
         const nomesBlk = [...new Set(blkSlots.map(h => { const b = blocos.find(b => b.diaSemana === h.diaSemana && b.periodo === h.periodo && b.slot === h.slot); return b ? b.nome : ''; }))].join(', ');
-        banners.push(`<div class="banner warn"><span class="b-msg">⚠ <b>“${esc(s.disciplina.nome)}”</b> ocupa o horário travado <b>${esc(nomesBlk)}</b> em ${sem.rotulo}. Resolva o conflito para que ela conte nos próximos semestres.</span>
-    <span class="b-actions"><button class="btn btn-sm btn-ghost" data-rm-rasc="${s.disciplina.codigo}">Remover da grade</button><button class="btn btn-sm btn-ghost" data-abrir-blocos="${sem.idx}">Editar bloqueio</button></span></div>`);
+        banners.push(banner('warn', `⚠ <b>“${esc(s.disciplina.nome)}”</b> ocupa o horário travado <b>${esc(nomesBlk)}</b> em ${sem.rotulo}. Resolva o conflito para que ela conte nos próximos semestres.`,
+            `<button class="btn btn-sm btn-ghost" data-rm-rasc="${s.disciplina.codigo}">Remover da grade</button><button class="btn btn-sm btn-ghost" data-abrir-blocos="${sem.idx}">Editar bloqueio</button>`));
     });
     // trabalho: conflito de núcleo / déficit semanal na grade escolhida
     const tw = K.normTrab(trabDoSem(sem.idx)); const tb = sem.trab;
     if (tw.trabalha && (+tw.horas > 0) && tb && escolhida.sel.length) {
-        if (tb.conflitosNucleo > 0) banners.push(`<div class="banner warn"><span class="b-msg">⚠ ${tb.conflitosNucleo} dia(s) têm aula dentro do <b>horário de trabalho fixo</b> em ${sem.rotulo}. Esse intervalo é sempre travado — reduza a janela de trabalho ou escolha outra grade.</span> <span class="b-actions"><button class="btn btn-sm btn-ghost" data-abrir-blocos="${sem.idx}">Ajustar trabalho</button></span></div>`);
-        else if (tb.deficit > 1e-6) banners.push(`<div class="banner info"><span class="b-msg">ℹ Nesta grade só cabem <b>${K.fmtDur(tb.total)}</b> de trabalho/sem (faltam ${K.fmtDur(tb.deficit)} para o total de ${K.fmtDur(tw.horas)}). ${tw.modo === 'flexivel' ? 'O sistema priorizou as grades que melhor aproveitam sua disponibilidade.' : 'As aulas reduzem a janela de trabalho fixo nesta grade — reduza a janela ou escolha outra grade.'}</span> <span class="b-actions"><button class="btn btn-sm btn-ghost" data-abrir-blocos="${sem.idx}">Ajustar trabalho</button></span></div>`);
+        const ajustarTrabalho = `<button class="btn btn-sm btn-ghost" data-abrir-blocos="${sem.idx}">Ajustar trabalho</button>`;
+        if (tb.conflitosNucleo > 0) banners.push(banner('warn', `⚠ ${tb.conflitosNucleo} dia(s) têm aula dentro do <b>horário de trabalho fixo</b> em ${sem.rotulo}. Esse intervalo é sempre travado — reduza a janela de trabalho ou escolha outra grade.`, ajustarTrabalho));
+        else if (tb.deficit > 1e-6) banners.push(banner('info', `ℹ Nesta grade só cabem <b>${K.fmtDur(tb.total)}</b> de trabalho/sem (faltam ${K.fmtDur(tb.deficit)} para o total de ${K.fmtDur(tw.horas)}). ${tw.modo === 'flexivel' ? 'As aulas ocupam parte da faixa em que você pode trabalhar.' : 'As aulas reduzem a janela de trabalho fixo nesta grade — reduza a janela ou escolha outra grade.'}`, ajustarTrabalho));
     }
 
     const editorAberto = S.editor && S.editor.idx === sem.idx;
@@ -867,18 +1065,18 @@ function planoSemestreHTML(sem) {
     // S7 — ordem: Avisos → Horários travados → (Cronograma → Grades, só após responder sobre trabalho)
     const topo = `
 <div class="sem-head"><h2>${sem.rotulo} ${sem.formatura ? '🎓' : ''}</h2>
-<div class="flx">${aguardando ? '<span class="chip" style="color:var(--secondary)">aguardando resposta sobre trabalho</span>' : headAcoes}</div>
+<div class="flx">${aguardando ? '<span class="chip" style="color:var(--secondary)">aguardando resposta sobre trabalho</span>' : headAcoes + botaoIcs(sem)}</div>
 </div>
+${formIcsHTML(sem)}
 ${banners.join('')}
 ${blocosSemestreHTML(sem)}`;
-    if (aguardando) return topo + `
-<div class="banner info" style="margin-top:14px">🕒 Para calcular e exibir o cronograma e as grades possíveis de ${esc(sem.rotulo)}, primeiro responda acima em “Horários travados” se você trabalha neste semestre.</div>`;
+    if (aguardando) return topo + banner('info', `🕒 Para calcular e exibir o cronograma e as grades possíveis de ${esc(sem.rotulo)}, primeiro responda acima em “Horários travados” se você trabalha neste semestre.`);
     return topo + `
 ${(calSel.length || editorAberto) ? calendarHTML(calSem, calSel, editorAberto) : ''}
 ${(calSel.length || editorAberto) ? legendaHTML() : ''}
 <h3 style="margin:22px 0 6px;font-size:15px">🎲 Grades possíveis ${sem.status === 'confirmado' ? '<span class="muted" style="font-weight:400;font-size:12px">— use “Refazer” para voltar ao plano e às alternativas</span>' : '<span class="muted" style="font-weight:400;font-size:12px">— o plano recomendado e até 3 alternativas que mantêm o mesmo semestre de formatura</span>'}</h3>
 ${editorAberto ? editorHTML(sem) : ''}
-<div class="grades">${(cards.length ? cards.join('') : '<div class="banner info">Nenhuma grade gerada para este semestre.</div>')}${editorAberto ? '' : montarCard}</div>`;
+<div class="grades">${(cards.length ? cards.join('') : banner('info', sem.cursoImpossivel ? 'Nenhuma grade: veja acima por que não há solução.' : 'Nenhuma matéria planejada para este semestre.'))}${editorAberto ? '' : montarCard}</div>`;
 }
 
 function tituloDaGrade(i, sem, custom) {
@@ -1177,7 +1375,6 @@ ${reqListHTML(reqsFormatura(sem))}</div>`;
     EVENTOS (delegação)
     =================================================================== */
 root.addEventListener('click', onClick);
-root.addEventListener('input', onInput);
 root.addEventListener('change', onChange);
 document.addEventListener('mousemove', onTipMove);
 root.addEventListener('mousedown', onDragStart);
@@ -1203,13 +1400,26 @@ async function onClick(e) {
     registrarAcao('clique', e.target);
     const t = e.target;
     if (t.closest('#abrir-ajuda')) return abrirAjuda();
-    const pick = t.closest('[data-pick]'); if (pick) { $(`[data-input="${pick.dataset.pick}"]`).click(); return; }
+    if (t.closest('[data-escolher-pdfs]')) { $('[data-input="pdfs"]').click(); return; }
     if (t.closest('#processar')) return processar();
     if (t.closest('#restaurar')) { setEstado(carregar() || novoEstado()); hidratarPresets(); if (S.fase === 'upload') S.fase = 'upload'; render(); return; }
 
-    // divergências
-    const dv = t.closest('[data-div]');
-    if (dv) { const d = S.divergPendentes.shift(); if (dv.dataset.div === 'yes') S.equivalencias[d.gnhCod] = d.matrizCod; salvar(); render(); return; }
+    // conferência e divergências
+    if (t.closest('#conf-continuar')) { S.fase = (S.divergPendentes || []).length ? 'divergencias' : 'preferencias'; salvar(); render(); return; }
+    if (t.closest('#voltar-conferencia')) { S.fase = 'conferencia'; salvar(); render(); return; }
+    const dve = t.closest('[data-div-escolha]');
+    if (dve) { S.divergEscolhas = { ...(S.divergEscolhas || {}), [dve.dataset.divEscolha]: dve.dataset.valor }; salvar(); render(); return; }
+    if (t.closest('#div-confirmar')) { aplicarEscolhasDeDivergencia(); salvar(); render(); return; }
+
+    // trilhas: mover pelo teclado/clique, confirmar a ordem ou voltar à sugestão
+    const tmv = t.closest('[data-trilha-mover]'); if (tmv) { moverTrilha(tmv.dataset.trilhaMover, +tmv.dataset.dir); refreshPrefs(); return; }
+    if (t.closest('[data-trilhas-confirmar]')) { S.preferencias.trilhasConfirmadas = true; refreshPrefs(); return; }
+    if (t.closest('[data-trilhas-sugerir]')) { S.preferencias.trilhasConfirmadas = false; refreshPrefs(); return; }
+
+    // exportar .ics
+    const ica = t.closest('[data-ics-abrir]'); if (ica) { icsAberto = icsAberto === +ica.dataset.icsAbrir ? null : +ica.dataset.icsAbrir; render(); return; }
+    if (t.closest('[data-ics-fechar]')) { icsAberto = null; render(); return; }
+    const icb = t.closest('[data-ics-baixar]'); if (icb) return baixarIcs(+icb.dataset.icsBaixar);
 
     // preferências (mesmos controles na tela de onboarding e no slide-over dentro do app)
     const pr = t.closest('[data-pref]'); if (pr) { S.preferencias.campusUnico = !S.preferencias.campusUnico; refreshPrefs(); return; }
@@ -1245,6 +1455,7 @@ async function onClick(e) {
             if (el) { el.open = true; el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
             return;
         }
+        if (precisaEscolherTrilhas()) { toast('Escolha a ordem das trilhas empatadas e clique em “Usar esta ordem”.'); return; }
         S.fase = 'app'; S.abaAtiva = 1; salvar(); render(); return;
     }
     if (t.closest('#voltar-upload')) { S.fase = 'upload'; render(); return; }
@@ -1289,17 +1500,49 @@ async function onClick(e) {
     const mn = t.closest('[data-manual]'); if (mn) return manualAction(mn);
 }
 
-function onInput(e) {
-    const r = e.target.closest('[data-range]');
-    if (r) {
-        const k = r.dataset.range; let v = +r.value; S.preferencias[k] = v;
-        if (k === 'cargaMin' && v > S.preferencias.cargaMax) S.preferencias.cargaMax = v;
-        if (k === 'cargaMax' && v < S.preferencias.cargaMin) S.preferencias.cargaMin = v;
-        $('#lbl-min').textContent = S.preferencias.cargaMin; $('#lbl-max').textContent = S.preferencias.cargaMax; salvar();
-    }
+/** Aceita as divergências marcadas "sim" como equivalências e segue para as preferências. */
+function aplicarEscolhasDeDivergencia() {
+    const escolhas = S.divergEscolhas || {};
+    const aceitas = (S.divergPendentes || []).filter(d => (escolhas[d.gnhCod] || d.padrao || 'nao') === 'sim');
+    for (const d of aceitas) S.equivalencias[d.gnhCod] = d.matrizCod;
+    log('divergencias.escolhas', { aceitas: aceitas.map(d => `${d.gnhCod}→${d.matrizCod}`) });
+    S.divergPendentes = [];
+    S.fase = 'preferencias';
 }
+function moverTrilha(id: string, dir: number) {
+    const a = [...S.preferencias.preferenciaTrilhas];
+    const i = a.indexOf(id), j = i + dir;
+    if (i < 0 || j < 0 || j >= a.length) return;
+    [a[i], a[j]] = [a[j], a[i]];
+    S.preferencias.preferenciaTrilhas = a;
+    S.preferencias.trilhasConfirmadas = true;
+}
+const MAX_CARGA = 10;
 function onChange(e) {
     registrarAcao('alteracao', e.target);
+    const el = e.target;
+    // conferência: perguntas iniciais
+    const mq = el.closest('[data-manual-quando]');
+    if (mq) { const cod = mq.dataset.manualQuando; definirConclusaoManual(cod, mq.value === '' ? null : +mq.value, (S.manuais.formas || {})[cod] || 'regular'); salvar(); render(); return; }
+    const mf = el.closest('[data-manual-forma]');
+    if (mf) { const cod = mf.dataset.manualForma; definirConclusaoManual(cod, S.manuais.estagios[cod] == null ? null : +S.manuais.estagios[cod], mf.value); salvar(); render(); return; }
+    const pf = el.closest('[data-porfora], [data-porfora-sem]');
+    if (pf) {
+        const chave = pf.dataset.porfora || pf.dataset.porforaSem;
+        const horas = Math.max(0, +($(`[data-porfora="${chave}"]`) || {}).value || 0);
+        const idx = +($(`[data-porfora-sem="${chave}"]`) || {}).value || 0;
+        definirLancamentoPorFora(chave, horas, idx); salvar(); render(); return;
+    }
+    // preferências: janela de horário e carga máxima
+    const jn = el.closest('[data-janela]');
+    if (jn) {
+        const j = { ...(S.preferencias.janela || K.JANELA_INTEIRA), [jn.dataset.janela]: jn.value };
+        const ordem = c => K.ORDEM_SLOTS.findIndex(([p, s]) => p + s === c);
+        if (ordem(j.inicio) > ordem(j.fim)) j[jn.dataset.janela === 'inicio' ? 'fim' : 'inicio'] = jn.value;
+        S.preferencias.janela = j; refreshPrefs(); return;
+    }
+    const pn = el.closest('[data-pref-num]');
+    if (pn) { S.preferencias[pn.dataset.prefNum] = Math.min(MAX_CARGA, Math.max(1, Math.round(+pn.value) || 1)); refreshPrefs(); return; }
     // S11 — horas realizadas de um item acumulativo naquele semestre
     const msn = e.target.closest('[data-manual-sem-num]');
     if (msn) {
@@ -1526,9 +1769,8 @@ class ErroConteudoPdf extends Error {
 function mensagemErroPdf(err): string {
     const base = ERROS_CONTEUDO_PDF[err.message];
     const nome = err.message === 'matriz' ? 'Matriz Curricular' : err.message === 'historico' ? 'Histórico Escolar' : err.message === 'gnh' ? 'Turmas Abertas' : '';
-    if (!base) return nome ? `Não foi possível extrair dados de [${nome}]. Verifique se o PDF tem texto selecionável (não é imagem escaneada).` : 'Erro ao processar os arquivos: ' + err.message;
-    const detalhes = err instanceof ErroConteudoPdf && err.detalhes.length ? '\n\nO que não bateu:\n' + err.detalhes.map(d => '• ' + d).join('\n') : '';
-    return base + detalhes;
+    if (base) return base;
+    return nome ? `Não foi possível extrair dados de [${nome}]. Verifique se o PDF tem texto selecionável (não é imagem escaneada).` : 'Erro ao processar os arquivos: ' + err.message;
 }
 async function processar() {
     const st = $('#proc-status'); const setp = (m) => { if (st) st.textContent = m; };
@@ -1537,7 +1779,7 @@ async function processar() {
     log('pdf.inicio', { arquivos: Object.fromEntries(Object.entries(S.files).map(([k, f]: [string, any]) => [k, f ? `${f.name} (${f.size} bytes)` : null])) });
     try {
         setp('Lendo Matriz Curricular…');
-        const mp = await extrairPaginas(S.files.matriz);
+        const mp = S.files.matriz.pages;
         const matriz = K.parseMatriz(mp);
         const verificacao = K.verificarMatriz(matriz);
         log('pdf.matriz', { paginas: mp.length, disciplinas: matriz.disciplinas.length, comPreRequisito: matriz.disciplinas.filter(d => d.preRequisitos.length).length, totais: { obrigatorias: matriz.resumo.chObrigatoriaTotal, optativas: matriz.resumo.chOptativasTotal, extensao: matriz.resumo.chExtensaoTotal, eletivas: matriz.resumo.chEletivaTotal }, problemas: verificacao.ok === false ? verificacao.problemas : [], ms: decorrido() });
@@ -1545,7 +1787,7 @@ async function processar() {
         if (verificacao.ok === false) throw new ErroConteudoPdf('matriz-leitura', verificacao.problemas);
         if (!matriz.disciplinas.some(d => d.preRequisitos.length)) throw new Error('matriz-prereq');
         setp('Lendo Histórico Escolar…');
-        const hp = await extrairPaginas(S.files.historico);
+        const hp = S.files.historico.pages;
         const historico = K.parseHistorico(hp);
         const estrutura = K.estruturarConjuntos(matriz, historico.resumoOptativas);
         log('pdf.historico', { paginas: hp.length, cursadas: historico.cursadas.length, aprovadas: historico.cursadasAprovadas.length, emAndamento: historico.emAndamento, semestreMatriculadas: historico.semestreMatriculadas, periodo: historico.aluno.periodoAtual, conjuntos: historico.resumoOptativas ? historico.resumoOptativas.conjuntos.map(c => `${c.id}:${c.chObrigatoria}`) : null, problemasConjuntos: estrutura.ok === false ? estrutura.problemas : [], ms: decorrido() });
@@ -1553,27 +1795,28 @@ async function processar() {
         if (estrutura.ok === false) throw new ErroConteudoPdf('historico-optativas', estrutura.problemas);
         const matrizCurso = estrutura.matriz;
         setp('Lendo Turmas Abertas…');
-        let lidas; try { lidas = await lerTurmas(S.files.gnh); } catch (e) { log('pdf.turmas.excecao', descreverErro(e), 'error'); throw new Error('gnh'); }
-        const gnh = lidas.turmas;
+        let gnh; try { gnh = K.parseTurmasAbertas(S.files.gnh.pages); } catch (e) { log('pdf.turmas.excecao', descreverErro(e), 'error'); throw new Error('gnh'); }
+        const semestreOferta = S.files.gnh.semestre;
         const presenciais = gnh.filter(t => /Presencial/i.test(t.enquadramento));
         log('pdf.turmas', { turmas: gnh.length, comHorario: gnh.filter(t => t.horarios.length).length, semOferta: gnh.filter(t => t.semOferta).length, presenciaisSemHorario: presenciais.filter(t => !t.horarios.length).map(t => `${t.codigo}/${t.turma}`), ms: decorrido() });
         if (!gnh.length) throw new Error('gnh');
         if (!gnh.some(t => t.horarios.length)) throw new Error('gnh-horarios');
 
-        S.parsed = { matriz: matrizCurso, historico, gnh, gnhSemestre: lidas.semestre };
-        const eqd = K.detectarEquivalencias(matrizCurso, gnh);
-        log('pdf.equivalencias', { automaticas: eqd.auto, divergencias: eqd.divergencias.map(d => `${d.gnhCod}→${d.matrizCod}`) });
+        S.parsed = { matriz: matrizCurso, historico, gnh, gnhSemestre: semestreOferta ? `${semestreOferta.ano}/${semestreOferta.per}` : null };
+        const eqd = K.detectarEquivalencias(matrizCurso, gnh, historico.aluno.matrizCodigo);
+        log('pdf.equivalencias', { automaticas: eqd.auto, divergencias: eqd.divergencias.map(d => `${d.gnhCod}→${d.matrizCod} (${d.padrao})`) });
         S.equivalencias = { ...eqd.auto };
         S.divergPendentes = eqd.divergencias;
-        S.divergTotal = eqd.divergencias.length;
-        if (!S.preferencias.preferenciaTrilhas.length) S.preferencias.preferenciaTrilhas = Object.keys(matrizCurso.subareas);
+        S.divergEscolhas = Object.fromEntries(eqd.divergencias.map(d => [d.gnhCod, d.padrao]));
+        erroLeitura = null;
         setp('Pronto!');
-        S.fase = eqd.divergencias.length ? 'divergencias' : 'preferencias';
+        S.fase = 'conferencia';
         salvar(); render();
     } catch (err) {
         log('pdf.falha', { codigo: err.message, detalhes: err instanceof ErroConteudoPdf ? err.detalhes : undefined, ...descreverErro(err) }, 'error');
         setp('');
-        alert(mensagemErroPdf(err));
+        erroLeitura = { mensagem: mensagemErroPdf(err), detalhes: err instanceof ErroConteudoPdf ? err.detalhes : [] };
+        renderUpload();
         console.error(err);
     }
 }
@@ -1582,18 +1825,14 @@ function toast(msg) { const t = document.createElement('div'); t.className = 'to
 
 /* ---------- Upload handlers (file inputs) ---------- */
 document.addEventListener('change', e => {
-    const inp = (e.target as HTMLElement).closest('[data-input]') as HTMLInputElement | null; if (!inp) return;
-    const k = inp.dataset.input; const file = inp.files[0]; if (!file) return;
-    if (!/pdf/i.test(file.type) && !/\.pdf$/i.test(file.name)) { alert('Selecione um arquivo PDF.'); return; }
-    S.files[k] = file; renderUpload();
+    const inp = (e.target as HTMLElement).closest('[data-input]') as HTMLInputElement | null; if (!inp || !inp.files.length) return;
+    receberArquivos(inp.files);
 });
 document.addEventListener('dragover', e => { const dz = (e.target as HTMLElement).closest('.dz'); if (dz) { e.preventDefault(); dz.classList.add('drag'); } });
 document.addEventListener('dragleave', e => { const dz = (e.target as HTMLElement).closest('.dz'); if (dz) dz.classList.remove('drag'); });
 document.addEventListener('drop', e => {
     const dz = (e.target as HTMLElement).closest('.dz') as HTMLElement | null; if (!dz) return; e.preventDefault(); dz.classList.remove('drag');
-    const k = dz.dataset.dz; const file = e.dataTransfer.files[0]; if (!file) return;
-    if (!/pdf/i.test(file.type) && !/\.pdf$/i.test(file.name)) { alert('Solte um arquivo PDF.'); return; }
-    S.files[k] = file; renderUpload();
+    if (e.dataTransfer.files.length) receberArquivos(e.dataTransfer.files);
 });
 
 /* ---------- Bootstrap ---------- */
