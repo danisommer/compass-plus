@@ -5,7 +5,7 @@
     (`parser.ts`). Módulo ES: exporta `default` o objeto API (importado como `K`
     nos demais módulos), reunindo parsing + cálculos numa única superfície.
     =================================================================== */
-import Parser, { TRILHA_SUBAREAS, REQUISITOS } from './parser';
+import Parser, { REQUISITOS } from './parser';
 
 /* ---------- Constantes de horário (Apêndice A) ---------- */
 const SLOTS = {
@@ -549,11 +549,13 @@ function calcularHoras(matriz, cursadasSet, extras) {
     });
     const c1159 = porConjunto['1159']?.cursada || 0;
     const c1161 = porConjunto['1161']?.cursada || 0;
+    const chConjunto = id => (matriz.resumo.conjuntosOptativos.find(c => c.id === id) || { chObrigatoria: 0 }).chObrigatoria;
+    const regra = matriz.resumo.trilhas || { chObrigatoria: 0, minimoValidadas: 0, subareas: [] };
     // trilhas: validação parcial (3 subáreas) — soma simples de CH cursada em subáreas
     let trilhaCursada = 0; const subStatus: any = {};
-    Object.keys(TRILHA_SUBAREAS).forEach(id => {
-        const ch = porConjunto[id]?.cursada || 0; trilhaCursada += ch;
-        subStatus[id] = { nome: TRILHA_SUBAREAS[id], cursada: ch, validada: ch >= REQUISITOS.trilhaMin, faltante: Math.max(0, REQUISITOS.trilhaMin - ch) };
+    regra.subareas.forEach(s => {
+        const ch = porConjunto[s.id]?.cursada || 0; trilhaCursada += ch;
+        subStatus[s.id] = { nome: s.nome, total: s.chObrigatoria, cursada: ch, validada: ch >= s.chObrigatoria, faltante: Math.max(0, s.chObrigatoria - ch) };
     });
     const validadas = Object.values(subStatus).filter((s: any) => s.validada).length;
 
@@ -563,20 +565,21 @@ function calcularHoras(matriz, cursadasSet, extras) {
 
     const eletivaCursada = (extras && extras.eletivaManual) || 0;
 
+    const totais = matriz.resumo;
     const linha = (req, cur) => ({ total: req, cursada: cur, faltante: Math.max(0, req - cur), ok: cur >= req });
     return {
-        obrigatorias: linha(REQUISITOS.obrigatorias, obrCursada),
-        optativasTotal: linha(REQUISITOS.optativas, c1159 + c1161 + trilhaCursada),
-        conj1159: linha(REQUISITOS.conj1159, c1159),
-        conj1161: linha(REQUISITOS.conj1161, c1161),
+        obrigatorias: linha(totais.chObrigatoriaTotal, obrCursada),
+        optativasTotal: linha(totais.chOptativasTotal, c1159 + c1161 + trilhaCursada),
+        conj1159: linha(chConjunto('1159'), c1159),
+        conj1161: linha(chConjunto('1161'), c1161),
         trilhas: {
-            total: REQUISITOS.trilhas1160, cursada: trilhaCursada,
-            faltante: validadas >= REQUISITOS.trilhasNecessarias ? Math.max(0, REQUISITOS.trilhas1160 - trilhaCursada) : Math.max(0, REQUISITOS.trilhas1160 - trilhaCursada),
-            validadas, ok: validadas >= REQUISITOS.trilhasNecessarias && trilhaCursada >= REQUISITOS.trilhas1160
+            total: regra.chObrigatoria, cursada: trilhaCursada, necessarias: regra.minimoValidadas,
+            faltante: Math.max(0, regra.chObrigatoria - trilhaCursada),
+            validadas, ok: validadas >= regra.minimoValidadas && trilhaCursada >= regra.chObrigatoria
         },
         subStatus,
-        eletivas: linha(REQUISITOS.eletivas, eletivaCursada),
-        extensao: linha(REQUISITOS.extensao, extCursada),
+        eletivas: linha(totais.chEletivaTotal, eletivaCursada),
+        extensao: linha(totais.chExtensaoTotal, extCursada),
         complementares: linha(REQUISITOS.complementares, cursadasSet.has('ICSX50') ? REQUISITOS.complementares : 0),
     };
 }

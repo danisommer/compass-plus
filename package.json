@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "fixture": "tsx scripts/gerar-fixture.ts"
   },
   "dependencies": {
     "pdfjs-dist": "^4.10.38",
@@ -16,7 +18,9 @@
   },
   "devDependencies": {
     "@types/sortablejs": "^1.15.8",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.3",
-    "vite": "^6.0.7"
+    "vite": "^6.0.7",
+    "vitest": "^3.2.4"
   }
 }

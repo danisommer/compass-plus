@@ -1127,6 +1127,11 @@ input[type=range]::-webkit-slider-thumb {
     color: #a9eeb8
 }
 
+.banner .b-msg {
+    /* texto do aviso num único item flex (senão cada trecho/<b> vira uma coluna) */
+    min-width: 0
+}
+
 .banner .b-actions {
     margin-left: auto;
     display: flex;

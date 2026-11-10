@@ -5,38 +5,42 @@
     (`engine.ts`). Módulo ES: exporta as funções nomeadas + um objeto `default`
     com a API de parsing.
     =================================================================== */
+import type { ItemPdf, PaginaPdf } from './pdf-extracao';
+
+/** Disciplina da matriz. `chSemanal` = aulas por semana; `periodoMinimo` = "Período:N" exigido como pré-requisito. */
+export interface Disciplina {
+    codigo: string;
+    nome: string;
+    periodoSugerido: number;
+    chTotal: number;
+    chSemanal: number;
+    chExt: number;
+    modeloDisciplina: string;
+    preRequisitos: string[];
+    periodoMinimo: number | null;
+    conjuntoOptativo: string | null;
+    subAreaTrilha: string | null;
+    isOpcional: boolean;
+}
+export interface ConjuntoOptativo { id: string; nome: string; periodoInicial: number; periodoFinal: number; chObrigatoria: number; disciplinas: string[]; }
+/** Regra do conjunto de trilhas: `minimoValidadas` subáreas com `chObrigatoria` cada, somando `chObrigatoria` do conjunto. */
+export interface RegraTrilhas { id: string; nome: string; chObrigatoria: number; minimoValidadas: number; subareas: { id: string; nome: string; chObrigatoria: number }[]; }
+/** Totais lidos do rodapé da matriz; `null` quando o rodapé não trouxe o valor. */
+export interface TotaisMatriz { chObrigatoriaTotal: number | null; chOptativasTotal: number | null; chExtensaoTotal: number | null; chEletivaTotal: number | null; }
+export interface ResumoMatriz extends TotaisMatriz { conjuntosOptativos: ConjuntoOptativo[]; trilhas: RegraTrilhas | null; }
+export interface Matriz { disciplinas: Disciplina[]; resumo: ResumoMatriz; subareas: Record<string, string>; }
+export type VerificacaoMatriz = { ok: true } | { ok: false; problemas: string[] };
+
+/** Linha do "Resumo Optativas" do histórico. `chFaltante` é `null` quando o histórico escreve "Faltantes". */
+export interface ConjuntoHistorico { id: string; nome: string; periodoInicial: number; periodoFinal: number; chs: number; chObrigatoria: number; chCursada: number; chFaltante: number | null; chValidada: number; }
+export interface ResumoOptativas { conjuntos: ConjuntoHistorico[]; trilhas: { id: string; minimoValidadas: number; subareas: ConjuntoHistorico[] } | null; }
+export interface ResumoEletiva { total: number; cursada: number; faltante: number; validada: number; }
+export interface LinhaResumoGeral { total: number; cursada: number; aprovadaOuValidada: number; faltante: number; aprovada: number; }
+export interface ResumoGeral { obrigatorias: LinhaResumoGeral | null; optativas: LinhaResumoGeral | null; eletivas: LinhaResumoGeral | null; extensao: { total: number; cursada: number; faltante: number } | null; }
+export type EstruturaConjuntos = { ok: true; matriz: Matriz } | { ok: false; problemas: string[] };
 
 /* ---------- Constantes do curso (currículo) ---------- */
-const TRILHA_SUBAREAS = {
-    '1162': 'Gestão de Sistemas de Informação',
-    '1163': 'Interação Humano-Computador',
-    '1164': 'Desenvolvimento Baseado em Plataformas',
-    '1165': 'Banco de Dados',
-    '1166': 'Inteligência Artificial',
-    '1167': 'Processamento Gráfico',
-    '1168': 'Algoritmos e Complexidade',
-    '1169': 'Engenharia de Software',
-    '1170': 'Redes de Computadores',
-    '1171': 'Sistemas Embarcados e Robótica',
-    '1172': 'Linguagens de Programação',
-    '1173': 'Otimização, Mod. Analíticos e Simulação',
-};
-const CONJUNTOS = {
-    '1159': { nome: 'Segundo Estrato', pIni: 3, pFim: 6, ch: 360 },
-    '1161': { nome: 'Optativas do Ciclo de Humanidades', pIni: 3, pFim: 6, ch: 135 },
-    '1160': { nome: 'Terceiro Estrato — Trilhas em Computação', pIni: 4, pFim: 8, ch: 345 },
-};
 const REQUISITOS = {
-    obrigatorias: 2005,
-    optativas: 840,
-    conj1159: 360,
-    conj1161: 135,
-    trilhas1160: 345,
-    trilhaMin: 90,        // mínimo p/ validar uma subárea
-    trilhasNecessarias: 3,
-    eletivas: 105,
-    extensao: 330,
-    extensaoEmObrig: 60,  // ICSX20
     complementares: 90,
 };
 
@@ -57,10 +61,12 @@ function dice(a, b) {                       // similaridade de bigramas (0..1)
 }
 const reCodigo = /^[A-Z]{2,5}[0-9][0-9A-Z]{0,2}$/;   // ICSD20, MAT7C1, ICSHX0, ELEW40...
 function isCodigo(t) { return reCodigo.test(t) && /[0-9]/.test(t) && t.length >= 5 && t.length <= 6; }
+const CONECTIVOS_MINUSCULOS = new Set(['de', 'da', 'do', 'das', 'dos', 'e', 'a', 'ao', 'aos', 'em', 'para', 'à', 'às']);
+/** Capitaliza cada palavra (letras acentuadas incluídas), mantendo os conectivos em minúsculas — exceto no início. */
 function tituloCase(s) {
-    return (s || '').toLowerCase().replace(/\b([a-zà-ú0-9])([a-zà-ú0-9]*)/g, (m, a, b) => a.toUpperCase() + b)
-        .replace(/\b(De|Da|Do|Das|Dos|E|A|Ao|Em|Para|À)\b/g, w => w.toLowerCase())
-        .replace(/^./, c => c.toUpperCase());
+    return (s || '').normalize('NFC').toLowerCase()
+        .replace(/[\p{L}\p{M}\p{N}]+/gu, w => CONECTIVOS_MINUSCULOS.has(w) ? w : w[0].toUpperCase() + w.slice(1))
+        .replace(/^\p{L}/u, c => c.toUpperCase());
 }
 
 /* ===================================================================
@@ -88,122 +94,236 @@ function reconstruirLinhas(pages, xMax?) {
 /* ===================================================================
     PARSER 1 — Matriz Curricular
     =================================================================== */
-// Recuo (pt) do início da coluna "Modelo de disciplina" em relação ao título "Modelo" do cabeçalho:
-// o conteúdo da coluna é centralizado e palavras largas começam alguns pontos antes do título.
-const RECUO_COLUNA_MODELO = 8;
-function parseMatriz(pages) {
-    const linhas = reconstruirLinhas(pages);
-    const disciplinas = [];
-    const isHeader = toks => toks[0] && /^(Período|PER|\[OPT\])$/.test(toks[0].t);
-    let inicioColunaModelo = null;
+const RE_CABECALHO_PERIODO = /^(Período|PER)$/;
+const RE_CONJUNTO = /^\[(\d{4})\]$/;
+const CHAVES_RODAPE = ['CHTOBRIGATORIASMATRIZ', 'CHTOPTATIVASMATRIZ', 'CHEXTENSAO', 'CHELETIVA'] as const;
+type ChaveRodape = typeof CHAVES_RODAPE[number];
+type TotaisRodape = Partial<Record<ChaveRodape, number>>;
+const CAMPO_DO_TOTAL: [ChaveRodape, keyof TotaisMatriz][] = [
+    ['CHTOBRIGATORIASMATRIZ', 'chObrigatoriaTotal'], ['CHTOPTATIVASMATRIZ', 'chOptativasTotal'],
+    ['CHEXTENSAO', 'chExtensaoTotal'], ['CHELETIVA', 'chEletivaTotal'],
+];
+const MARGEM_MATRIZ = { opt: 6, cod: 6, mod: 8, num: 8, pre: 20, larguraCodigo: 40, inicioNome: 25, abaixoCabecalho: 18, alturaCabecalho: 16, acimaRodape: 2 };
+const X_PRE_REQUISITOS_SEM_CABECALHO = 515;
+const CAMPOS_CARGA = 9;
+const IDX_CARGA = { semanal: 2, extensao: 6, total: 8 };
+const MIN_DISCIPLINAS_MATRIZ = 20;
 
-    for (let i = 0; i < linhas.length; i++) {
-        const toks = linhas[i];
-        if (!toks.length) continue;
-        if (isHeader(toks)) { const mod = toks.find(t => /^Modelo$/i.test(t.t)); if (mod) inicioColunaModelo = mod.x - RECUO_COLUNA_MODELO; continue; }
-        if (!/^[1-8]$/.test(toks[0].t)) continue;
+/** Limites x (início) de cada coluna da tabela, derivados do cabeçalho da página. */
+interface ColunasMatriz { opt: number; cod: number; mod: number; num: number; pre: number; }
+/** Uma linha da tabela: os itens entre os pontos médios da âncora (dígito do período) e das vizinhas. */
+interface LinhaMatriz { periodo: number; itens: ItemPdf[]; }
 
-        // conjunto + código
-        let conjuntoRaw = null, codeIdx = 1;
-        if (toks[1] && /^\[(\d{4})\]$/.test(toks[1].t)) { conjuntoRaw = toks[1].t.slice(1, 5); codeIdx = 2; }
-        if (!toks[codeIdx] || !isCodigo(toks[codeIdx].t)) continue;
-        const codigo = toks[codeIdx].t;
+function colunasDaPagina(its: ItemPdf[]): ColunasMatriz | null {
+    const achar = (re: RegExp) => its.find(i => re.test(i.str));
+    const per = achar(RE_CABECALHO_PERIODO), opt = achar(/^\[OPT\]$/), cod = achar(/^Código$/),
+        mod = achar(/^Modelo/), teo = achar(/^teóricas$/), pre = achar(/^Pré-$|^Pré-requisito|^requisito/);
+    if (!per || !opt || !cod || !mod || !teo) return null;
+    const M = MARGEM_MATRIZ;
+    return { opt: opt.x - M.opt, cod: cod.x - M.cod, mod: mod.x - M.mod, num: teo.x - M.num, pre: pre ? pre.x - M.pre : X_PRE_REQUISITOS_SEM_CABECALHO };
+}
 
-        // localizar a corrida de 9 inteiros (CH) — pulando pré-reqs / lixo à direita
-        const arr = toks.map(t => t.t);
-        let j = arr.length - 1;
-        const prereqLinha = [];
-        while (j > codeIdx && !/^\d+$/.test(arr[j])) { if (isCodigo(arr[j])) prereqLinha.push(arr[j]); j--; }
-        const nums = [];
-        while (j > codeIdx && /^\d+$/.test(arr[j])) { nums.unshift(parseInt(arr[j], 10)); j--; }
-        if (nums.length < 9) continue;                          // não é linha de disciplina
-        const ch = nums.slice(nums.length - 9);                 // 9 campos de CH
-        const runStart = j + 1 + (nums.length - 9);
-        const modeloX = toks[runStart - 1] ? toks[runStart - 1].x : 1e9;
-        const nameFirstIdx = codeIdx + 1;
-        const nameStartX = toks[nameFirstIdx] ? toks[nameFirstIdx].x : modeloX;
-        const codeX = toks[codeIdx].x;
-        const midName = (codeX + nameStartX) / 2;
-        const inicioModelo = inicioColunaModelo != null ? inicioColunaModelo : (nameStartX + modeloX) / 2;
+function linhasDaPagina(alturaPagina: number, its: ItemPdf[], cols: ColunasMatriz): LinhaMatriz[] {
+    const M = MARGEM_MATRIZ;
+    const cabecalho = its.find(i => RE_CABECALHO_PERIODO.test(i.str));
+    const inicio = cabecalho ? cabecalho.yTop + M.abaixoCabecalho : 0;
+    const ancoras = its.filter(i => /^[1-8]$/.test(i.str) && i.x < cols.opt && i.yTop > inicio).sort((a, b) => a.yTop - b.yTop);
+    const cabecalhosPeriodo = its.filter(i => RE_CABECALHO_PERIODO.test(i.str) && i.x < cols.opt).map(i => i.yTop);
+    const iniciosCabecalho = its.filter(i => i.str === 'Total').map(i => i.yTop);
+    const rodape = its.find(i => /^CÂMPUS:/.test(i.str));
+    const fim = rodape ? rodape.yTop - M.acimaRodape : alturaPagina;
+    return ancoras.map((ancora, a) => {
+        const y = ancora.yTop;
+        const loBase = a === 0 ? inicio : (ancoras[a - 1].yTop + y) / 2;
+        const hiBase = a === ancoras.length - 1 ? fim : (y + ancoras[a + 1].yTop) / 2;
+        const proximoCabecalho = Math.min(...iniciosCabecalho.filter(t => t > y));
+        const cabecalhoAnterior = Math.max(...cabecalhosPeriodo.filter(t => t < y));
+        const lo = Math.max(loBase, cabecalhoAnterior + M.alturaCabecalho);
+        const hi = proximoCabecalho < hiBase ? proximoCabecalho - 1 : hiBase;
+        return { periodo: +ancora.str, itens: its.filter(i => i.yTop >= lo && i.yTop < hi).sort((p, q) => p.yTop - q.yTop || p.x - q.x) };
+    });
+}
 
-        // linha-início: separa nome × modelo pela coluna (x), não pela posição
-        const nomeToks = [], modeloToks = [];
-        for (let k = nameFirstIdx; k < runStart; k++) {
-            const tk = toks[k];
-            if (tk.x < inicioModelo) nomeToks.push(tk.t); else modeloToks.push(tk.t);
+function disciplinaDaLinha({ periodo, itens }: LinhaMatriz, cols: ColunasMatriz): Disciplina | null {
+    const M = MARGEM_MATRIZ;
+    const naFaixa = (ini: number, fim: number) => itens.filter(i => i.x >= ini && i.x < fim);
+    const codigo = naFaixa(cols.cod, cols.cod + M.larguraCodigo).find(i => isCodigo(i.str));
+    if (!codigo) return null;
+    const cargas = naFaixa(cols.num, cols.pre).sort((p, q) => p.x - q.x)
+        .map(i => i.str.replace(/\s*horas$/, '')).filter(s => /^\d+$/.test(s)).map(Number);
+    if (cargas.length < CAMPOS_CARGA) return null;
+    const ch = cargas.slice(-CAMPOS_CARGA);
+    const opt = naFaixa(cols.opt, cols.cod).find(i => RE_CONJUNTO.test(i.str));
+    const conjunto = opt ? opt.str.slice(1, 5) : null;
+    const preReq = itens.filter(i => i.x >= cols.pre).map(i => i.str);
+    const periodoMinimo = preReq.join(' ').match(/Período:\s*(\d)/);
+    return {
+        codigo: codigo.str,
+        nome: tituloCase(naFaixa(cols.cod + M.inicioNome, cols.mod).filter(i => !isCodigo(i.str) && i.str !== 'Turmas').map(i => i.str).join(' ')),
+        periodoSugerido: periodo,
+        chTotal: ch[IDX_CARGA.total],
+        chSemanal: ch[IDX_CARGA.semanal],
+        chExt: ch[IDX_CARGA.extensao],
+        modeloDisciplina: naFaixa(cols.mod, cols.num).map(i => i.str).join(' '),
+        preRequisitos: [...new Set(preReq.filter(isCodigo))],
+        periodoMinimo: periodoMinimo ? +periodoMinimo[1] : null,
+        conjuntoOptativo: conjunto,
+        subAreaTrilha: null,
+        isOpcional: conjunto != null,
+    };
+}
+
+function lerTotaisRodape(texto: string, totais: TotaisRodape): void {
+    for (const k of CHAVES_RODAPE) { const m = texto.match(new RegExp(`${k}:\\s*(\\d+)`)); if (m) totais[k] = +m[1]; }
+}
+
+/**
+ * Lê a Matriz Curricular por geometria de tabela: colunas pelo cabeçalho de cada página, linhas ancoradas no dígito do período.
+ * `conjuntoOptativo` sai com o id impresso na coluna [OPT]; quais ids são subáreas de trilha vem do histórico (`estruturarConjuntos`).
+ */
+function parseMatriz(pages: PaginaPdf[]): Matriz {
+    const disciplinas: Disciplina[] = [];
+    const vistos = new Set<string>();
+    const totais: TotaisRodape = {};
+    let cols: ColunasMatriz | null = null;
+    for (const pg of pages) {
+        const its = pg.items.filter(i => i.str && i.str.trim());
+        lerTotaisRodape(its.map(i => i.str).join(' '), totais);
+        cols = colunasDaPagina(its) || cols;
+        if (!cols) continue;
+        for (const linha of linhasDaPagina(pg.h, its, cols)) {
+            const d = disciplinaDaLinha(linha, cols);
+            if (!d || vistos.has(d.codigo)) continue;
+            vistos.add(d.codigo); disciplinas.push(d);
         }
-
-        // continuação nas linhas seguintes (nome/modelo por coluna; pára no rodapé/próxima disc.)
-        const prereqs = prereqLinha.slice();
-        const footerRe = /^(CÂMPUS|MATRIZ|STATUS|CURSO|CHT|SOMA|TEMA|TIPO|Legenda|Optativas|Detalhes|Eletiva|Período|Pré|\*)/i;
-        let contLines = 0;
-        for (let n = i + 1; n < linhas.length && contLines < 6; n++) {
-            const ln = linhas[n];
-            if (!ln.length) continue;
-            if (isHeader(ln)) break;
-            if (footerRe.test(ln.map(t => t.t).join(' '))) break;
-            if (/^[1-8]$/.test(ln[0].t)) {                        // possível próxima disciplina
-                const hasRun = ln.map(t => t.t).filter(s => /^\d+$/.test(s)).length >= 9;
-                const c = (ln[1] && /^\[(\d{4})\]$/.test(ln[1].t)) ? 2 : 1;
-                if (hasRun && ln[c] && isCodigo(ln[c].t)) break;
-            }
-            contLines++;
-            for (const tk of ln) {
-                if (isCodigo(tk.t)) { if (tk.x > inicioModelo) prereqs.push(tk.t); continue; }
-                if (tk.t === 'Turmas' || tk.t === 'horas') continue;
-                if (tk.x >= midName && tk.x < inicioModelo) nomeToks.push(tk.t);      // inclui dígitos do nome
-                else if (tk.x >= inicioModelo && !/^\d+$/.test(tk.t)) modeloToks.push(tk.t);
-            }
-        }
-
-        const modelo = modeloToks.join(' ');
-        let conjuntoOptativo = null, subAreaTrilha = null;
-        if (conjuntoRaw) {
-            if (TRILHA_SUBAREAS[conjuntoRaw]) { conjuntoOptativo = '1160'; subAreaTrilha = conjuntoRaw; }
-            else if (conjuntoRaw === '1159' || conjuntoRaw === '1161') conjuntoOptativo = conjuntoRaw;
-            else conjuntoOptativo = conjuntoRaw;
-        }
-        if (disciplinas.some(d => d.codigo === codigo)) continue;   // evita duplicatas
-        disciplinas.push({
-            codigo,
-            nome: tituloCase(nomeToks.join(' ')),
-            periodoSugerido: parseInt(toks[0].t, 10),
-            chTotal: ch[8],
-            chSemanal: ch[2],
-            chExt: ch[6],
-            modeloDisciplina: modelo,
-            preRequisitos: [...new Set(prereqs)],
-            conjuntoOptativo,
-            subAreaTrilha,
-            isOpcional: conjuntoOptativo != null,
-        });
-    }
-
-    const conjuntosOptativos = [];
-    for (const id of Object.keys(CONJUNTOS)) {
-        const c = CONJUNTOS[id];
-        conjuntosOptativos.push({
-            id, nome: c.nome, periodoInicial: c.pIni, periodoFinal: c.pFim, chObrigatoria: c.ch,
-            disciplinas: disciplinas.filter(d => (id === '1160' ? d.conjuntoOptativo === '1160' : d.conjuntoOptativo === id)).map(d => d.codigo),
-        });
     }
     return {
         disciplinas,
         resumo: {
-            chObrigatoriaTotal: REQUISITOS.obrigatorias,
-            chOptativasTotal: REQUISITOS.optativas,
-            chExtensaoTotal: REQUISITOS.extensao,
-            chEletivaTotal: REQUISITOS.eletivas,
-            conjuntosOptativos,
+            chObrigatoriaTotal: totais.CHTOBRIGATORIASMATRIZ ?? null,
+            chOptativasTotal: totais.CHTOPTATIVASMATRIZ ?? null,
+            chExtensaoTotal: totais.CHEXTENSAO ?? null,
+            chEletivaTotal: totais.CHELETIVA ?? null,
+            conjuntosOptativos: [],
+            trilhas: null,
         },
-        subareas: TRILHA_SUBAREAS,
+        subareas: {},
     };
+}
+
+/**
+ * Aplica à matriz os conjuntos optativos do "Resumo Optativas" do histórico: cargas exigidas, nomes, a regra das
+ * trilhas e o mapeamento subárea → conjunto de trilhas. Idempotente; falha se alguma optativa citar um conjunto desconhecido.
+ */
+function estruturarConjuntos(m: Matriz, r: ResumoOptativas | null): EstruturaConjuntos {
+    if (!r || !r.conjuntos.length) return { ok: false, problemas: ['não encontrei o "Resumo Optativas" no histórico'] };
+    const pai = r.trilhas ? r.conjuntos.find(c => c.id === r.trilhas.id) : null;
+    const problemas: string[] = [];
+    if (r.trilhas && !pai) problemas.push(`o conjunto de trilhas ${r.trilhas.id} não aparece no "Resumo Optativas"`);
+    const paiDaSubarea = new Map((r.trilhas ? r.trilhas.subareas : []).map(s => [s.id, r.trilhas.id]));
+    const conhecidos = new Set([...r.conjuntos.map(c => c.id), ...paiDaSubarea.keys()]);
+    const desconhecidos = [...new Set(m.disciplinas.filter(d => d.isOpcional && !conhecidos.has(d.conjuntoOptativo)).map(d => d.conjuntoOptativo))];
+    if (desconhecidos.length) problemas.push(`a matriz cita conjunto(s) que o histórico não descreve: ${desconhecidos.join(', ')}`);
+    if (problemas.length) return { ok: false, problemas };
+    const disciplinas = m.disciplinas.map(d => paiDaSubarea.has(d.conjuntoOptativo)
+        ? { ...d, conjuntoOptativo: paiDaSubarea.get(d.conjuntoOptativo), subAreaTrilha: d.conjuntoOptativo } : d);
+    const trilhas: RegraTrilhas | null = r.trilhas ? {
+        id: pai.id, nome: pai.nome, chObrigatoria: pai.chObrigatoria, minimoValidadas: r.trilhas.minimoValidadas,
+        subareas: r.trilhas.subareas.map(s => ({ id: s.id, nome: s.nome, chObrigatoria: s.chObrigatoria })),
+    } : null;
+    return {
+        ok: true,
+        matriz: {
+            disciplinas,
+            resumo: {
+                ...m.resumo, trilhas,
+                conjuntosOptativos: r.conjuntos.map(c => ({
+                    id: c.id, nome: c.nome, periodoInicial: c.periodoInicial, periodoFinal: c.periodoFinal, chObrigatoria: c.chObrigatoria,
+                    disciplinas: disciplinas.filter(d => d.conjuntoOptativo === c.id).map(d => d.codigo),
+                })),
+            },
+            subareas: Object.fromEntries((trilhas ? trilhas.subareas : []).map(s => [s.id, s.nome])),
+        },
+    };
+}
+
+/** Confere se a leitura é confiável: ao menos 20 disciplinas, os 4 totais do rodapé e a soma das obrigatórias igual ao rodapé. */
+function verificarMatriz(m: Matriz): VerificacaoMatriz {
+    const r: Partial<ResumoMatriz> = m.resumo || {};
+    const problemas: string[] = [];
+    if (m.disciplinas.length < MIN_DISCIPLINAS_MATRIZ) problemas.push(`só ${m.disciplinas.length} disciplina(s) reconhecida(s); uma matriz completa tem bem mais de ${MIN_DISCIPLINAS_MATRIZ}`);
+    for (const [chave, campo] of CAMPO_DO_TOTAL) if (r[campo] == null) problemas.push(`não encontrei o total ${chave} no rodapé da matriz`);
+    const somaObrigatorias = m.disciplinas.filter(d => !d.isOpcional).reduce((a, d) => a + d.chTotal, 0);
+    if (r.chObrigatoriaTotal != null && somaObrigatorias !== r.chObrigatoriaTotal)
+        problemas.push(`as obrigatórias lidas somam ${somaObrigatorias} h, mas o rodapé da matriz informa ${r.chObrigatoriaTotal} h`);
+    return problemas.length ? { ok: false, problemas } : { ok: true };
 }
 
 /* ===================================================================
     PARSER 2 — Histórico Escolar
     =================================================================== */
 const SIT_PRIO = { APROVADO: 5, CREDITO_CONSIGNADO: 5, CURSANDO: 3, REPROVADO: 2, CANCELADO: 1 };
+const numeroHistorico = (s: string) => +s.replace(/\./g, '');
+
+/** Linhas entre a primeira que casa `inicio` (exclusiva) e a seguinte que casa `fim` (exclusiva); [] se `inicio` não existir. */
+function secao(texto: string[], inicio: RegExp, fim: RegExp): string[] {
+    const i = texto.findIndex(t => inicio.test(t));
+    if (i < 0) return [];
+    const j = texto.findIndex((t, k) => k > i && fim.test(t));
+    return texto.slice(i + 1, j < 0 ? texto.length : j);
+}
+
+const RE_LINHA_CONJUNTO = /^(\d{4})\s+(?:\(\*\)\s+)?(.+?)\s+(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+|Faltantes)\s+([\d.]+)$/;
+function conjuntoDaLinha(t: string): ConjuntoHistorico | null {
+    const m = t.match(RE_LINHA_CONJUNTO);
+    if (!m) return null;
+    return {
+        id: m[1], nome: m[2], periodoInicial: +m[3], periodoFinal: +m[4], chs: +m[5],
+        chObrigatoria: numeroHistorico(m[6]), chCursada: numeroHistorico(m[7]),
+        chFaltante: m[8] === 'Faltantes' ? null : numeroHistorico(m[8]), chValidada: numeroHistorico(m[9]),
+    };
+}
+
+/** "Resumo Optativas": conjuntos do curso e, depois do "Detalhamento", as subáreas do conjunto de trilhas e quantas precisam ser validadas. */
+function lerResumoOptativas(texto: string[]): ResumoOptativas | null {
+    const linhas = secao(texto, /^Resumo Optativas/, /^Detalhes das Optativas Cursadas/);
+    const iDetalhe = linhas.findIndex(t => /^\*?\s*Detalhamento do Conjunto/.test(t));
+    const conjuntos = (iDetalhe < 0 ? linhas : linhas.slice(0, iDetalhe)).map(conjuntoDaLinha).filter(Boolean);
+    if (!conjuntos.length) return null;
+    if (iDetalhe < 0) return { conjuntos, trilhas: null };
+    const pai = linhas[iDetalhe].match(/\(\s*(\d{4})\s*-/);
+    const minimo = linhas.join(' ').match(/quando\s+(\d+)\s+das\s+subáreas/i);
+    const subareas = linhas.slice(iDetalhe + 1).map(conjuntoDaLinha).filter(Boolean);
+    return { conjuntos, trilhas: pai && minimo && subareas.length ? { id: pai[1], minimoValidadas: +minimo[1], subareas } : null };
+}
+
+/** "Resumo Eletiva": total, cursada, faltante e validada (a coluna de pré-requisito é opcional, por isso os três últimos números). */
+function lerResumoEletiva(texto: string[]): ResumoEletiva | null {
+    const linha = secao(texto, /^Resumo Eletiva/, /^Exame de Suficiência/).find(t => /^Eletiva(\s+[\d.]+){4,}$/.test(t));
+    if (!linha) return null;
+    const n = linha.split(/\s+/).slice(1).map(numeroHistorico);
+    return { total: n[0], cursada: n[n.length - 3], faltante: n[n.length - 2], validada: n[n.length - 1] };
+}
+
+function linhaResumoGeral(linhas: string[], rotulo: string): LinhaResumoGeral | null {
+    const re = new RegExp(`^CHT Disciplinas ${rotulo}\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)$`);
+    const m = linhas.map(t => t.match(re)).find(Boolean);
+    return m ? { total: numeroHistorico(m[1]), cursada: numeroHistorico(m[2]), aprovadaOuValidada: numeroHistorico(m[3]), faltante: numeroHistorico(m[4]), aprovada: numeroHistorico(m[5]) } : null;
+}
+
+/** "Resumo Geral" do histórico: números oficiais usados para conferir o cálculo do app. */
+function lerResumoGeral(texto: string[]): ResumoGeral | null {
+    const linhas = secao(texto, /^Resumo Geral$/, /^Detalhes das CHExt/);
+    if (!linhas.length) return null;
+    const ext = linhas.map(t => t.match(/^CHEXT geral do curso\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/)).find(Boolean);
+    return {
+        obrigatorias: linhaResumoGeral(linhas, 'Obrigatórias'),
+        optativas: linhaResumoGeral(linhas, 'Optativas'),
+        eletivas: linhaResumoGeral(linhas, 'Eletivas'),
+        extensao: ext ? { total: numeroHistorico(ext[1]), cursada: numeroHistorico(ext[2]), faltante: numeroHistorico(ext[3]) } : null,
+    };
+}
+
 function parseHistorico(pages) {
     const linhas = reconstruirLinhas(pages);
     const texto = linhas.map(l => l.map(t => t.t).join(' '));
@@ -281,7 +401,10 @@ function parseHistorico(pages) {
     const cursadasAprovadas = cursadas.filter(d => d.situacao === 'APROVADO' || d.situacao === 'CREDITO_CONSIGNADO').map(d => d.codigo);
     const emAndamento = cursadas.filter(d => d.situacao === 'CURSANDO').map(d => d.codigo);
 
-    return { aluno, cursadas, cursadasAprovadas, emAndamento, enadeConcluinte, semestreMatriculadas };
+    return {
+        aluno, cursadas, cursadasAprovadas, emAndamento, enadeConcluinte, semestreMatriculadas,
+        resumoOptativas: lerResumoOptativas(texto), resumoEletiva: lerResumoEletiva(texto), resumoGeral: lerResumoGeral(texto),
+    };
 }
 
 /* ===================================================================
@@ -396,14 +519,14 @@ function detectarEquivalencias(matriz, gnh) {
 
 /* ---------- exports ---------- */
 export {
-    TRILHA_SUBAREAS, CONJUNTOS, REQUISITOS,
+    REQUISITOS,
     norm, dice, isCodigo, tituloCase, reconstruirLinhas,
-    parseMatriz, parseHistorico, parseTurmasAbertas, detectarEquivalencias,
+    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, detectarEquivalencias,
 };
 
 const Parser = {
     norm, dice, reconstruirLinhas,
-    parseMatriz, parseHistorico, parseTurmasAbertas, detectarEquivalencias,
-    tituloCase, TRILHA_SUBAREAS, CONJUNTOS, REQUISITOS,
+    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, detectarEquivalencias,
+    tituloCase, REQUISITOS,
 };
 export default Parser;

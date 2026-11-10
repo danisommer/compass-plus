@@ -31,8 +31,26 @@ function carregar() {
             const it = o.manuais[k]; if (!it) { o.manuais[k] = { porSem: {} }; return; }
             if (!it.porSem) { it.porSem = {}; if (+it.h > 0) it.porSem[it.sem == null ? 0 : it.sem] = +it.h; delete it.h; delete it.sem; }
         });
+        descartarLeituraInvalida(o);
         return o;
     } catch (e) { log('estado.carregar.falha', descreverErro(e), 'error'); return null; }
+}
+/** Problemas que impedem reaproveitar a leitura salva: matriz reprovada em `verificarMatriz` ou lida por versão sem os conjuntos do histórico. */
+function problemasDaLeituraSalva(parsed): string[] {
+    const v = K.verificarMatriz(parsed.matriz);
+    const problemas = v.ok ? [] : v.problemas;
+    if (!parsed.historico || !parsed.historico.resumoOptativas || (parsed.matriz.resumo || {}).trilhas === undefined)
+        problemas.push('leitura salva por uma versão sem os conjuntos optativos do histórico');
+    return problemas;
+}
+/** Sessão salva com leitura inválida volta ao upload (preferências, trabalho e escolhas ficam). */
+function descartarLeituraInvalida(o) {
+    if (!o.parsed || !o.parsed.matriz) return;
+    const problemas = problemasDaLeituraSalva(o.parsed);
+    if (!problemas.length) return;
+    log('estado.leitura_invalida', { problemas }, 'warn');
+    o.parsed = { matriz: null, historico: null, gnh: null };
+    o.fase = 'upload';
 }
 // Configurações de trabalho: chave dedicada, durável — sobrevive ao "Reiniciar tudo"
 const PRESETS_KEY = 'compass_trab_presets';
@@ -164,7 +182,7 @@ function cursadasComManuais(baseSet, idx) {
 function formaturaOK(horas, idx) {
     const m = S.manuais;
     return horas.obrigatorias.faltante === 0 && horas.conj1159.faltante === 0 && horas.conj1161.faltante === 0 &&
-        horas.trilhas.validadas >= K.REQUISITOS.trilhasNecessarias && horas.trilhas.faltante === 0 &&
+        horas.trilhas.validadas >= horas.trilhas.necessarias && horas.trilhas.faltante === 0 &&
         horas.eletivas.faltante === 0 && horas.extensao.faltante === 0 &&
         (m.enade.done && m.enade.sem != null && m.enade.sem <= idx) &&
         D.cursadasFinal && D.cursadasFinal.has('ICSX41');
@@ -184,7 +202,7 @@ function disciplinaAjuda(d, h) {
     if ((d.chExt || 0) > 0 && h.extensao.faltante > 0) return true;
     if (d.conjuntoOptativo === '1159') return h.conj1159.faltante > 0;
     if (d.conjuntoOptativo === '1161') return h.conj1161.faltante > 0;
-    if (d.conjuntoOptativo === '1160') return h.trilhas.faltante > 0 || h.trilhas.validadas < K.REQUISITOS.trilhasNecessarias;
+    if (d.conjuntoOptativo === '1160') return h.trilhas.faltante > 0 || h.trilhas.validadas < h.trilhas.necessarias;
     return false;
 }
 // a candidata tem alguma turma que não esbarra num bloqueio manual nem no trabalho fixo deste semestre?
@@ -209,7 +227,7 @@ function ehDiscManual(d) { return (d.chSemanal || 0) === 0 || /EST[ÁA]GIO|ENADE
 function classificarTerminal(horas, cursadasSet, candUteis, idx) {
     const obrigPend = D.matriz.disciplinas.filter(d => !d.isOpcional && !cursadasSet.has(d.codigo) && !ehDiscManual(d));
     const conjPend = horas.conj1159.faltante > 0 || horas.conj1161.faltante > 0 ||
-        horas.trilhas.faltante > 0 || horas.trilhas.validadas < K.REQUISITOS.trilhasNecessarias;
+        horas.trilhas.faltante > 0 || horas.trilhas.validadas < horas.trilhas.necessarias;
     if (!obrigPend.length && !conjPend) return { quaseFormatura: true };
     return { cursoImpossivel: true, motivosImpossivel: motivosImpossivel(obrigPend, candUteis, cursadasSet, idx) };
 }
@@ -326,7 +344,7 @@ function projetar() {
         const conjFeitos = {
             '1159': hAgora.conj1159.faltante === 0,
             '1161': hAgora.conj1161.faltante === 0,
-            '1160': hAgora.trilhas.faltante === 0 && hAgora.trilhas.validadas >= K.REQUISITOS.trilhasNecessarias,
+            '1160': hAgora.trilhas.faltante === 0 && hAgora.trilhas.validadas >= hAgora.trilhas.necessarias,
         };
         const ord = K.prioridade(D.ctx, cand, curIdx, faltObrig, periodoRef, conjFeitos);
         const manuais = manualBlocos(idx);
