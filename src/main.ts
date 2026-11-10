@@ -6,8 +6,10 @@ import Sortable from 'sortablejs';
 import './styles.css';
 import { log, iniciarLog, registrarEstado, descreverErro } from './log';
 import { extrairPaginasDoDocumento } from './pdf-extracao';
+import { ehManual } from './requisitos';
+import { carregarSolver } from './solver';
 import {
-    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, extrasAteSem, cursadasComManuais, formaturaOK, calcHorasIdx, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
+    DEFAULT_PREF, S, D, novoEstado, salvar, carregar, PRESETS_KEY, salvarPresets, carregarPresets, hidratarPresets, ORDER, manualBlocos, trabDoSem, trabRespondido, trabFlex, trabCalc, totalBloqueios, TRAB_CFG_KEYS, trabCfgDe, mesmaCfgTrab, salvarPresetTrab, aplicarPresetTrab, excluirPresetTrab, trabRascunhoOuSalvo, trabTemRascunho, trabRascunhoSet, trabAplicarRascunho, trabDescartarRascunho, aplicarTrabSeguintes, derive, turmaDe, tipoDe, rotuloSem, manualNoSem, somaManualAteSem, cursadasComManuais, ofertaDoSemestre, projetar, reconstruirGrade, blocoExiste, addBloco, rmBloco, bloqEfetivos, bloqTemRascunho, blocoExisteRasc, addBlocoRasc, rmBlocoRasc, bloqAplicarRascunho, bloqDescartarRascunho, limparEscolhasApos, limparEscolhasDesde, setEstado
 } from './state';
 
 /* ===================================================================
@@ -18,20 +20,6 @@ const $ = (s: string, r: Document | Element = document): any => r.querySelector(
 const $$ = (s: string, r: Document | Element = document): any[] => [...r.querySelectorAll(s)];
 const root = $('#root');
 const esc = s => (s == null ? '' : String(s)).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-// S8 — explicação geral do score (tooltip da barra superior e dos cabeçalhos de grade)
-const SCORE_TIP = esc('O que é o Score') + '\\nUma nota que ordena as grades possíveis de um semestre: quanto maior, melhor a grade para avançar no curso.\\n\\n' +
-    esc('Para que serve') + '\\nRecomendar e ordenar as grades, priorizando o que mais aproxima você da formatura e respeita seus bloqueios/trabalho.\\n\\n' +
-    esc('Como é calculado') + '\\n+100 por obrigatória · +8 por matéria que destrava agora · +2 por dependente futuro · +12 por trilha preferida · −40 por conflito com bloqueio · −6 por matéria (enxuga a carga) · − penalidade de trabalho (déficit / núcleo / horário fixo).';
-// constrói o tooltip detalhado (S9) a partir do detalhamento de pontuarSelDetalhe
-function scoreBreakdownTip(sem, sel) {
-    const det = K.pontuarSelDetalhe(D.ctx, sel || [], sem.cursadasAntes || new Set(), sem.faltObrig || new Set(), S.preferencias, sem.bloqueios || [], trabDoSem(sem.idx));
-    const linhas = det.partes.filter(p => p.val !== 0 || (p.n != null && p.n !== 0)).map(p => {
-        const v = Math.round(p.val); const sinal = v >= 0 ? '+' : '';
-        const calc = p.n != null && p.peso != null ? `${p.n}×${p.peso} = ` : '';
-        return `${esc(p.label)}: ${calc}${sinal}${v}`;
-    });
-    return esc('Como este score foi obtido') + '\\n' + linhas.join('\\n') + '\\n──────\\n' + esc('Total') + `: ${det.total}`;
-}
 
 /* ---------- Ajuda: como exportar os PDFs do Portal do Aluno (slide-over) ---------- */
 function ajudaFig(i) {
@@ -94,12 +82,23 @@ async function extrairPaginas(file, onProg?) {
 /* ===================================================================
     RENDER
     =================================================================== */
+let solverPronto = false;
 function render() {
     if (S.fase === 'upload') return renderUpload();
     if (S.fase === 'divergencias') return renderDivergencias();
     if (S.fase === 'preferencias') return renderPreferencias();
+    if (!solverPronto) return renderCarregandoSolver();
     if (S.fase === 'grafo') { derive(); return renderGrafo(); }
     if (S.fase === 'app') { derive(); return renderApp(); }
+}
+function renderCarregandoSolver() {
+    root.innerHTML = '<div class="welcome"><p class="sub">Carregando o planejador…</p></div>';
+    carregarSolver()
+        .then(() => { solverPronto = true; render(); })
+        .catch(err => {
+            log('solver.falha', descreverErro(err), 'error');
+            root.innerHTML = '<div class="welcome"><div class="banner warn"><span class="b-msg">Não foi possível carregar o planejador (HiGHS, WebAssembly). Recarregue a página; se continuar, abra o console do navegador e envie o erro.</span></div></div>';
+        });
 }
 
 /* ---------- Upload ---------- */
@@ -673,7 +672,6 @@ function renderApp() {
 <button class="btn btn-sm btn-ghost" id="toggle-side">☰</button>
 <div class="logo">C+</div><div class="who">${esc(al.nome || 'Aluno')}</div>
 <div class="meta">
-    <span class="score-help" data-tip="${SCORE_TIP}">ⓘ Score</span>
     <div class="stat"><b>${(al.coeficienteAbsoluto || 0).toFixed(4)}</b><span>Coef. absoluto</span></div>
     <div class="stat"><b>${proj.length - 1}</b><span>Semestres projetados</span></div>
     <div class="stat"><b>${D.hist.aluno.periodoAtual}º</b><span>Período atual</span></div>
@@ -702,22 +700,25 @@ function sidebarHTML(sem) {
     <div class="bar"><i style="width:${pct}%;background:${obj.faltante === 0 ? 'var(--success)' : 'var(--primary)'}"></i></div></td>
     <td>${obj.total}h</td><td>${obj.faltante === 0 ? '<span style="color:var(--success)">✓</span>' : obj.faltante + 'h'}</td></tr>`;
     };
-    const sub = h.subStatus;
-    const trilhaRows = Object.keys(sub).filter(id => sub[id].cursada > 0 || S.preferencias.preferenciaTrilhas.indexOf(id) < 3)
-        .map(id => `<tr class="sub2 ${sub[id].faltante === 0 ? 'done' : ''}"><td>↳ ${esc(sub[id].nome)} ${sub[id].validada ? '<span style="color:var(--success)">✓</span>' : ''}</td><td>${sub[id].total}h</td><td>${sub[id].faltante}h</td></tr>`).join('');
+    const linhaSub = (rotulo, obj, help = '') => `<tr class="sub ${obj.ok ? 'done' : ''}"><td>↳ ${esc(rotulo)}${help ? `<span class="q-help" data-tip="${esc(help)}">?</span>` : ''}</td><td>${obj.total}h</td><td>${obj.ok ? '✓' : obj.faltante + 'h'}</td></tr>`;
+    const t = h.trilhas;
+    const ajudaTrilhas = t ? `Valem só as subáreas validadas (${t.subareas.length ? t.subareas[0].total : 0} h ou mais em cada uma), com o excedente delas: são precisas ${t.minimoValidadas} validadas somando ${t.total} h. Horas numa subárea não validada não contam.` : '';
+    const trilhaRows = t ? t.subareas.filter(s => s.cursada > 0 || S.preferencias.preferenciaTrilhas.indexOf(s.id) < t.minimoValidadas)
+        .map(s => `<tr class="sub2 ${s.validada ? 'done' : ''}"><td>↳ ${esc(s.nome)} ${s.validada ? '<span style="color:var(--success)">✓</span>' : ''}</td><td>${s.total}h</td><td>${s.faltante}h</td></tr>`).join('') : '';
+    const divergencias = D.divergenciasHistorico || [];
+    const avisoDivergencia = divergencias.length ? `<div class="banner warn"><span class="b-msg">⚠ O cálculo do app não bate com o histórico: ${divergencias.map(d => `${esc(d.requisito)} — app ${d.app}, histórico ${d.historico}`).join('; ')}. Confira se os PDFs são os mais recentes.</span></div>` : '';
     return `
 <div class="side-sec">
+${avisoDivergencia}
 <h4>📊 Horas faltantes <span class="muted" style="text-transform:none;font-weight:400">· ao fim de ${sem.rotulo}</span></h4>
 <table class="htable"><tbody>
     ${row('Obrigatórias', h.obrigatorias, '', 'Disciplinas obrigatórias da matriz, incluindo estágios e TCC.')}
-    ${row('Optativas (total)', h.optativasTotal, '', 'Soma de Segundo Estrato, Humanidades e Trilhas.')}
-    <tr class="sub ${h.conj1159.faltante === 0 ? 'done' : ''}"><td>↳ Segundo Estrato [1159]</td><td>${h.conj1159.total}h</td><td>${h.conj1159.faltante || '✓'}${h.conj1159.faltante ? 'h' : ''}</td></tr>
-    <tr class="sub ${h.conj1161.faltante === 0 ? 'done' : ''}"><td>↳ Humanidades [1161]</td><td>${h.conj1161.total}h</td><td>${h.conj1161.faltante || '✓'}${h.conj1161.faltante ? 'h' : ''}</td></tr>
-    <tr class="sub ${h.trilhas.faltante === 0 ? 'done' : ''}"><td>↳ Trilhas [1160] · ${h.trilhas.validadas}/3 validadas</td><td>${h.trilhas.total}h</td><td>${h.trilhas.faltante}h</td></tr>
+    ${row('Optativas (total)', h.optativas, '', 'Conjuntos optativos lidos do histórico; nas trilhas só contam as subáreas validadas.')}
+    ${h.conjuntos.map(c => linhaSub(`${c.nome} [${c.id}]`, c)).join('')}
+    ${t ? linhaSub(`${t.nome} [${t.id}] · ${t.validadas}/${t.minimoValidadas} validadas`, t, ajudaTrilhas) : ''}
     ${trilhaRows}
     ${row('Eletivas', h.eletivas, '', 'Qualquer disciplina da UTFPR. Registre manualmente abaixo.')}
-    ${row('Extensão', h.extensao, '', '330h: 60h via Trab. de Integração 1 + 270h de CCE/optativas extensionistas.')}
-    ${row('Complementares', h.complementares, '', 'Atividades Complementares (ICSX50).')}
+    ${row('Extensão', h.extensao, '', `${h.extensao.total} h: carga extensionista das disciplinas cursadas mais as atividades de extensão lançadas abaixo.`)}
 </tbody></table>
 </div>
 <div class="side-sec">
@@ -738,11 +739,11 @@ function manuaisHTML(sem) {
     const idx = sem ? sem.idx : 0;   // conclusão por clique usa o semestre em exibição (sem dropdown)
     // S11 — itens concluíveis por clique: a trava opaca "Item satisfeito em [período]" só aparece
     // A PARTIR DO SEMESTRE SEGUINTE ao da conclusão; no próprio semestre (ou antes) o controle segue acionável.
-    const estagioRow = (cod, nome) => {
+    const estagioRow = (cod, nome, ch) => {
         const compSem = m.estagios[cod];
         const marcado = compSem != null;
         const locked = marcado && idx > compSem;
-        const cabec = `<div><div style="font-size:12px;font-weight:600">${esc(nome)}</div><div class="muted" style="font-size:10px">${esc(cod)} · 200h</div></div>`;
+        const cabec = `<div><div style="font-size:12px;font-weight:600">${esc(nome)}</div><div class="muted" style="font-size:10px">${esc(cod)} · ${ch}h</div></div>`;
         if (locked) return `<div class="spread manual-done" style="margin-bottom:8px;opacity:.4">${cabec}
     <span class="chip" style="color:var(--success)">✓ Item satisfeito em ${esc(rotuloSem(compSem))}</span></div>`;
         return `<div class="spread" style="margin-bottom:8px">${cabec}
@@ -769,15 +770,16 @@ function manuaisHTML(sem) {
         return `<div class="spread" style="margin-bottom:8px">${cabec}
     <div class="flx"><input type="number" min="0" max="330" value="${noSem != null ? noSem : ''}" placeholder="0" data-manual-sem-num="${chave}" data-idx="${idx}" data-tip="Horas realizadas de ${esc(titulo)} em ${esc(rotuloSem(idx))} (soma ao total)" style="width:58px;background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:3px 6px;font-size:11px">h <span class="muted" style="font-size:10px">neste sem.</span></div></div>`;
     };
+    const semTurma = D.matriz.disciplinas.filter(d => !d.isOpcional && ehManual(d) && !D.cursadasBase.has(d.codigo));
+    const r = D.matriz.resumo;
     return `
-${estagioRow('ICSX51', 'Estágio 1')}
-${estagioRow('ICSX52', 'Estágio 2')}
-${acumRow('eletiva', 'eletivas', 'Eletivas externas', 'meta 105h')}
-${acumRow('extensao', 'extensao', 'Extensão (CCE)', 'faltam 270h')}
+${semTurma.map(d => estagioRow(d.codigo, d.nome, d.chTotal)).join('')}
+${acumRow('eletiva', 'eletivas', 'Eletivas externas', `meta ${r.chEletivaTotal}h`)}
+${acumRow('extensao', 'extensao', 'Extensão (CCE)', `meta ${r.chExtensaoTotal}h no total`)}
 ${(() => {
             const compSem = m.enade.sem, marcado = m.enade.done && compSem != null;
             const locked = marcado && idx > compSem;
-            const cabec = `<div><div style="font-size:12px;font-weight:600">ENADE Concluinte</div><div class="muted" style="font-size:10px">requisito de formatura</div></div>`;
+            const cabec = `<div><div style="font-size:12px;font-weight:600">ENADE Concluinte</div><div class="muted" style="font-size:10px">lembrete · não muda o semestre de formatura</div></div>`;
             if (locked) return `<div class="spread manual-done" style="opacity:.4">${cabec}
     <span class="chip" style="color:var(--success)">✓ Item satisfeito em ${esc(rotuloSem(compSem))}</span></div>`;
             return `<div class="spread">${cabec}
@@ -821,12 +823,15 @@ ${legendaHTML()}`;
 function planoSemestreHTML(sem) {
     const escolhida = sem.grade;
     const banners = [];
-    if (sem.status !== 'confirmado') banners.push(`<div class="banner warn">⚠ Grade estimada para ${sem.rotulo} — usa as Turmas Abertas carregadas como previsão da oferta; as turmas e horários reais podem mudar.</div>`);
+    const of = sem.oferta;
+    if (of && of.estimada) banners.push(`<div class="banner warn"><span class="b-msg">⚠ Oferta estimada a partir de <b>${esc(of.rotulo)}</b>: as turmas e os horários de ${esc(sem.rotulo)} podem mudar. Quando sair a oferta de ${esc(sem.rotulo)} (ou de outro semestre com a mesma paridade), carregue as Turmas Abertas dela.</span> <span class="b-actions"><button class="btn btn-sm btn-ghost" data-carregar-oferta="${sem.idx}">Carregar Turmas Abertas de outro semestre</button></span></div>`);
+    else if (of) banners.push(`<div class="banner info"><span class="b-msg">ℹ Oferta de ${esc(of.rotulo)} lida das Turmas Abertas.</span></div>`);
     const fp = sem.filtroPrefs;
     if (fp && fp.descartadas.length) {
         const p = S.preferencias;
+        const j = p.janela || K.JANELA_INTEIRA;
         const nomes = fp.descartadas.map(c => `${c} — ${(D.byCod.get(c) || {}).nome || ''}`).join('\\n');
-        banners.push(`<div class="banner info"><span class="b-msg">ℹ ${fp.descartadas.length} matéria(s) já liberada(s) e ofertada(s) ficaram de fora de ${sem.rotulo} pelo filtro de turno/campus (turnos: ${p.turnos.join(' ')} · campus: ${p.campusUnico ? esc(p.campus) : 'qualquer'}) — sem o filtro seriam <b>${fp.semFiltro}</b> candidatas em vez de <b>${fp.candidatas}</b>. Uma turma só entra se <b>todos</b> os horários dela estiverem nos turnos escolhidos.</span> <span class="b-actions"><button class="btn btn-sm btn-ghost" data-editar-pref data-tip="${esc(nomes)}">⚙️ Ajustar preferências</button></span></div>`);
+        banners.push(`<div class="banner info"><span class="b-msg">ℹ ${fp.descartadas.length} matéria(s) já liberada(s) e ofertada(s) ficaram de fora de ${sem.rotulo} pelo filtro de turno/campus/horário (turnos: ${p.turnos.join(' ')} · aulas de ${esc(j.inicio)} a ${esc(j.fim)} · campus: ${p.campusUnico ? esc(p.campus) : 'qualquer'}) — sem o filtro seriam <b>${fp.semFiltro}</b> candidatas em vez de <b>${fp.candidatas}</b>. Uma turma só entra se <b>todos</b> os horários dela couberem no filtro.</span> <span class="b-actions"><button class="btn btn-sm btn-ghost" data-editar-pref data-tip="${esc(nomes)}">⚙️ Ajustar preferências</button></span></div>`);
     }
     // rascunho banner
     const blocos = sem.bloqueios || [];
@@ -854,7 +859,7 @@ function planoSemestreHTML(sem) {
     const temGrades = sem.grades && sem.grades.length;
     const headAcoes = sem.status === 'confirmado'
         ? `<span class="chip" style="color:var(--success)">confirmado ✓</span> <button class="btn btn-sm btn-ghost" data-desconfirmar="${sem.idx}">Refazer</button>`
-        : `<span class="chip">futuro estimado</span>${temGrades ? ` <button class="btn btn-sm btn-primary" data-escolher="${sem.recKey == null ? 0 : sem.recKey}">✓ Confirmar grade sugerida</button>` : ''}`;
+        : `<span class="chip">futuro estimado</span>${temGrades ? ` <button class="btn btn-sm btn-primary" data-escolher="${sem.recKey == null ? 0 : sem.recKey}" data-tip="Fixa esta grade; os semestres seguintes são reotimizados em volta dela">✓ Confirmar o plano deste semestre</button>` : ''}`;
     // cronograma: durante a edição mostra a grade em edição (prévia ao vivo); senão, a grade ativa
     const calSel = editorAberto ? editorSel(sem) : escolhida.sel;
     const calSem = editorAberto ? Object.assign({}, sem, { trab: trabCalc(sem.idx, calSel) }) : sem;
@@ -871,23 +876,26 @@ ${blocosSemestreHTML(sem)}`;
     return topo + `
 ${(calSel.length || editorAberto) ? calendarHTML(calSem, calSel, editorAberto) : ''}
 ${(calSel.length || editorAberto) ? legendaHTML() : ''}
-<h3 style="margin:22px 0 6px;font-size:15px">🎲 Grades possíveis ${sem.status === 'confirmado' ? '<span class="muted" style="font-weight:400;font-size:12px">— escolha outra para trocar</span>' : '<span class="muted" style="font-weight:400;font-size:12px">— confirme a sugerida acima ou escolha/edite outra</span>'}</h3>
+<h3 style="margin:22px 0 6px;font-size:15px">🎲 Grades possíveis ${sem.status === 'confirmado' ? '<span class="muted" style="font-weight:400;font-size:12px">— use “Refazer” para voltar ao plano e às alternativas</span>' : '<span class="muted" style="font-weight:400;font-size:12px">— o plano recomendado e até 3 alternativas que mantêm o mesmo semestre de formatura</span>'}</h3>
 ${editorAberto ? editorHTML(sem) : ''}
 <div class="grades">${(cards.length ? cards.join('') : '<div class="banner info">Nenhuma grade gerada para este semestre.</div>')}${editorAberto ? '' : montarCard}</div>`;
 }
 
+function tituloDaGrade(i, sem, custom) {
+    if (custom) return 'Grade personalizada';
+    if (sem.status === 'confirmado') return 'Grade confirmada';
+    return i === 0 ? 'Plano recomendado' : `Alternativa ${i}`;
+}
 function gradeCardHTML(g, i, sem, custom, isRec, isSel) {
-    const rec = !!isRec;   // "Recomendada" = a grade de maior score dentro das restrições (definida em projetar)
+    const rec = !!isRec;   // "Recomendada" = a grade do plano global (menor semestre de formatura)
     const sel = !!isSel;   // "escolhida" = a grade confirmada — exatamente UM cartão (ver gradeSelecionadaKey)
     const aulas = g.sel.reduce((a, s) => a + (s.disciplina.chSemanal || 0), 0);
     const nblk = g.sel.filter(s => s.bloqueado).length;
     const open = rec || sel;
-    const scoreTip = scoreBreakdownTip(sem, g.sel);   // S9 — detalhamento ao passar o mouse
     return `<div class="gcard ${rec ? 'rec' : ''} ${sel ? 'sel' : ''} ${open ? 'open' : ''}" data-card="${i}">
 <div class="gh" data-toggle-card="${i}">
-    <div><div class="gtitle">${custom ? 'Grade personalizada' : 'Grade #' + (i + 1)}${rec ? ' <span class="chip" style="color:var(--secondary)">Recomendada</span>' : ''}</div>
+    <div><div class="gtitle">${tituloDaGrade(i, sem, custom)}${rec ? ' <span class="chip" style="color:var(--secondary)">Recomendada</span>' : ''}</div>
     <div class="gsub">${g.sel.length} disciplinas · ${aulas} aulas/sem · ${nblk ? ('<span style="color:var(--secondary)">' + nblk + ' em conflito</span>') : 'sem conflitos'}</div></div>
-    <div class="score" data-tip="${scoreTip}">${typeof g.score === 'number' ? ('<span class="dot"></span> Score: ' + g.score) : ''}</div>
 </div>
 <div class="gbody">
     ${g.sel.map(s => discRowHTML(s, sem)).join('')}
@@ -945,7 +953,7 @@ function discRowHTML(s, sem?) {
     return `<div class="disc-row ${s.bloqueado ? 'rascunho' : ''} ${conflitoTrab ? 'conflito-trab' : ''}" data-tip="${esc(tip)}">
 ${s.andamento ? '<span style="color:var(--secondary)">●</span>' : (s.bloqueado ? '<span style="color:var(--secondary)">⚠</span>' : '<span style="color:var(--success)">✓</span>')}
 <span class="code">${esc(d.codigo)}</span>
-<span class="nm">${esc(d.nome)}${reprov ? ' <span class="muted" style="font-size:10px">(reprovada antes)</span>' : ''}</span>
+<span class="nm">${esc(d.nome)}${reprov ? ' <span class="muted" style="font-size:10px">(reprovada antes)</span>' : ''}${s.motivos && s.motivos.length ? `<span class="motivo">${esc(s.motivos.join(' · '))}</span>` : ''}</span>
 ${conflitoTrab ? '<span class="chip" style="color:var(--secondary);font-size:10px" data-tip="Esta matéria ocupa um horário de trabalho — permitido porque seus horários são flexíveis">⚠ trabalho</span>' : ''}
 ${d.chExt > 0 ? '<span class="ext-dot" title="Extensionista"></span>' : ''}
 <span class="tag ${tag}">${tag}</span><span class="tag turno">${turno}</span>
@@ -1018,11 +1026,11 @@ function turmasDe(cod, sem) { const c = (sem.candidatas || []).find(x => x.disci
 // seleção atual do editor no formato do cronograma (para a prévia ao vivo)
 function editorSel(sem) {
     const ed = S.editor; if (!ed) return [];
-    return ed.codigos.map(cod => { const d = D.byCod.get(cod); const t = turmaDe(cod, ed.turmas[cod]); return { disciplina: d, turma: t, horarios: t ? t.horarios : [], bloqueado: t ? K.bloqueado(t.horarios, sem.bloqueios || []) : false }; }).filter(x => x.disciplina);
+    return ed.codigos.map(cod => { const d = D.byCod.get(cod); const t = turmaDe(cod, ed.turmas[cod], sem.idx); return { disciplina: d, turma: t, horarios: t ? t.horarios : [], bloqueado: t ? K.bloqueado(t.horarios, sem.bloqueios || []) : false }; }).filter(x => x.disciplina);
 }
 function editorOcup(sem, exclCod) {
     const ed = S.editor, ocup = [];
-    for (const cod of ed.codigos) { if (cod === exclCod) continue; const t = turmaDe(cod, ed.turmas[cod]); if (t) ocup.push(...t.horarios); }
+    for (const cod of ed.codigos) { if (cod === exclCod) continue; const t = turmaDe(cod, ed.turmas[cod], sem.idx); if (t) ocup.push(...t.horarios); }
     return ocup;
 }
 // conflito "duro": com outra matéria da grade ou com bloqueio manual (sempre impede selecionar)
@@ -1058,15 +1066,7 @@ function melhorTurmaSel(cod, sem, ocup) {
     }
     return fallback;
 }
-// S6 — acréscimo de score ao adicionar `cod` (com `turma`) a uma seleção base
-function scoreDeltaCod(sem, baseSel, cod, turma) {
-    const w = trabDoSem(sem.idx), cur = sem.cursadasAntes || new Set(), fo = sem.faltObrig || new Set();
-    const base = K.pontuarSel(D.ctx, baseSel, cur, fo, S.preferencias, sem.bloqueios || [], w);
-    const d = D.byCod.get(cod); const t = turma || turmaDe(cod, null);
-    const com = K.pontuarSel(D.ctx, baseSel.concat([{ disciplina: d, turma: t, horarios: t ? t.horarios : [] }]), cur, fo, S.preferencias, sem.bloqueios || [], w);
-    return Math.round(com - base);
-}
-const fmtDelta = v => (v >= 0 ? '+' : '') + v;
+const chipUtilidade = util => util ? '' : '<span class="ed-delta neg" data-tip="Cursar esta matéria agora não reduz nenhum requisito que ainda falta">não reduz requisito</span>';
 function horResumo(t) { return t.horarios && t.horarios.length ? t.horarios.map(h => K.DIAS[h.diaSemana].slice(0, 3) + ' ' + h.periodo + h.slot).join(' ') : 'sem horário'; }
 function turmaChip(cod, t, sem, sel, ocup) {
     const st = turmaEstado(t.horarios || [], sem, ocup);
@@ -1080,8 +1080,7 @@ function editorHTML(sem) {
     const ed = S.editor; if (!ed || ed.idx !== sem.idx) return '';
     const proxIdx = (D.projecao.find(s => s.idx > 0) || {}).idx;
     const ehProximo = sem.idx === proxIdx;
-    const selRaw = ed.codigos.map(cod => { const d = D.byCod.get(cod); const t = turmaDe(cod, ed.turmas[cod]); return { disciplina: d, turma: t, horarios: t ? t.horarios : [] }; }).filter(x => x.disciplina);
-    const score = K.pontuarSel(D.ctx, selRaw, sem.cursadasAntes || new Set(), sem.faltObrig || new Set(), S.preferencias, sem.bloqueios || [], trabDoSem(sem.idx));
+    const selRaw = ed.codigos.map(cod => { const d = D.byCod.get(cod); const t = turmaDe(cod, ed.turmas[cod], sem.idx); return { disciplina: d, turma: t, horarios: t ? t.horarios : [] }; }).filter(x => x.disciplina);
     const nConf = selRaw.filter(s => motivoConflito(s.horarios, sem, editorOcup(sem, s.disciplina.codigo))).length;
     const nTrabAviso = selRaw.filter(s => turmaEstado(s.horarios, sem, editorOcup(sem, s.disciplina.codigo)).avisoTrab).length;
     const rows = ed.codigos.map(cod => {
@@ -1091,15 +1090,12 @@ function editorHTML(sem) {
         let substBox = '';
         if (ed.subst === cod) {
             const ocupSem = editorOcup(sem, cod);                                  // ocupação da grade sem a matéria substituída
-            const baseSemCod = selRaw.filter(s => s.disciplina.codigo !== cod);
             const mesmaArea = (sem.candidatas || []).filter(c => !ed.codigos.includes(c.disciplina.codigo) && tipoDe(c.disciplina) === tipoDe(d));
             let subs = mesmaArea.length ? mesmaArea : (sem.candidatas || []).filter(c => !ed.codigos.includes(c.disciplina.codigo));
-            // S4.3 — só substitutas que PODEM ser selecionadas na grade atual (1ª turma sem conflito) e S6 — ordenadas por acréscimo de score
-            subs = subs.map(c => ({ c, t: melhorTurmaSel(c.disciplina.codigo, sem, ocupSem) })).filter(x => x.t)
-                .map(x => Object.assign(x, { delta: scoreDeltaCod(sem, baseSemCod, x.c.disciplina.codigo, x.t) }))
-                .sort((a, b) => b.delta - a.delta);
-            const lista = subs.map(({ c, t, delta }) => `<span class="ed-sub" data-ed-substituir="${esc(cod)}" data-novo="${esc(c.disciplina.codigo)}" data-sem="${sem.idx}" data-tip="Turma ${esc(t.turma)} · ${esc(horResumo(t))}">${esc(c.disciplina.codigo)} ${esc(c.disciplina.nome)} <span class="ed-delta ${delta >= 0 ? 'pos' : 'neg'}">${fmtDelta(delta)}</span></span>`).join('') || '<span class="muted">sem substitutas disponíveis sem conflito</span>';
-            substBox = `<div class="ed-subbox"><div class="muted" style="margin-bottom:4px">Substituir “${esc(d.nome)}” por uma matéria disponível (sem conflito · ordenadas por +score):</div>${lista}</div>`;
+            // S4.3 — só substitutas que PODEM ser selecionadas na grade atual (1ª turma sem conflito); as que reduzem requisito vêm primeiro
+            subs = subs.map(c => ({ c, t: melhorTurmaSel(c.disciplina.codigo, sem, ocupSem) })).filter(x => x.t);
+            const lista = subs.map(({ c, t }) => `<span class="ed-sub" data-ed-substituir="${esc(cod)}" data-novo="${esc(c.disciplina.codigo)}" data-sem="${sem.idx}" data-tip="Turma ${esc(t.turma)} · ${esc(horResumo(t))}">${esc(c.disciplina.codigo)} ${esc(c.disciplina.nome)} ${chipUtilidade(c.util)}</span>`).join('') || '<span class="muted">sem substitutas disponíveis sem conflito</span>';
+            substBox = `<div class="ed-subbox"><div class="muted" style="margin-bottom:4px">Substituir “${esc(d.nome)}” por uma matéria disponível (sem conflito · as que reduzem algum requisito primeiro):</div>${lista}</div>`;
         }
         return `<div class="ed-row">
     <div class="ed-rowh"><button class="ed-x" data-ed-rm="${esc(cod)}" data-sem="${sem.idx}" title="Remover da grade">✕</button>
@@ -1108,25 +1104,23 @@ function editorHTML(sem) {
     ${ehProximo ? `<button class="btn btn-sm btn-ghost ed-subbtn ${ed.subst === cod ? 'on' : ''}" data-ed-subst="${esc(cod)}" data-sem="${sem.idx}">↔ Matéria indisponível</button>` : ''}</div>
     <div class="ed-turmas">${chips || '<span class="muted">sem turma ofertada</span>'}</div>${substBox}</div>`;
     }).join('');
-    // S6 — lista de disponíveis ordenada pelo acréscimo de score (usando a 1ª turma selecionável)
+    // S6 — disponíveis: as que reduzem algum requisito primeiro (ordem já vem de projetar)
     const ocupAll = editorOcup(sem, null);
-    const dispCand = (sem.candidatas || []).filter(c => !ed.codigos.includes(c.disciplina.codigo))
-        .map(c => { const t = melhorTurmaSel(c.disciplina.codigo, sem, ocupAll) || c.turmas[0] || null; return { c, t, delta: scoreDeltaCod(sem, selRaw, c.disciplina.codigo, t) }; })
-        .sort((a, b) => b.delta - a.delta);
-    const disp = dispCand.map(({ c, delta }) => {
+    const dispCand = (sem.candidatas || []).filter(c => !ed.codigos.includes(c.disciplina.codigo));
+    const disp = dispCand.map(c => {
         const d = c.disciplina;
         const chips = c.turmas.map(t => turmaChip(d.codigo, t, sem, false, ocupAll)).join('');
-        return `<div class="ed-disc"><div class="ed-rowh"><span class="code">${esc(d.codigo)}</span><span class="nm">${esc(d.nome)}</span><span class="tag ${tipoDe(d)}">${tipoDe(d)}</span><span class="ed-delta ${delta >= 0 ? 'pos' : 'neg'}" data-tip="Acréscimo de score ao adicionar esta matéria">${fmtDelta(delta)}</span><button class="disc-grafo" data-ir-grafo="${esc(d.codigo)}" data-tip="Ver “${esc(d.nome)}” no grafo de matérias">🗺️</button></div><div class="ed-turmas">${chips || '<span class="muted">sem turma ofertada</span>'}</div></div>`;
+        return `<div class="ed-disc"><div class="ed-rowh"><span class="code">${esc(d.codigo)}</span><span class="nm">${esc(d.nome)}</span><span class="tag ${tipoDe(d)}">${tipoDe(d)}</span>${chipUtilidade(c.util)}<button class="disc-grafo" data-ir-grafo="${esc(d.codigo)}" data-tip="Ver “${esc(d.nome)}” no grafo de matérias">🗺️</button></div><div class="ed-turmas">${chips || '<span class="muted">sem turma ofertada</span>'}</div></div>`;
     }).join('');
     return `<div class="editor" id="editor-${sem.idx}">
 <div class="ed-head"><h3>✏️ ${ed.base ? 'Editando grade' : 'Montar grade'} — ${esc(sem.rotulo)}</h3>
-    <div class="ed-actions"><span class="score" data-tip="${SCORE_TIP}"><span class="dot"></span> Score ${score}${nConf ? ` · <span style="color:var(--secondary)">${nConf} em conflito</span>` : ''}${nTrabAviso ? ` · <span style="color:var(--secondary)">${nTrabAviso} sobre trabalho (flexível)</span>` : ''}</span>
+    <div class="ed-actions"><span class="muted">${ed.codigos.length} matéria(s)${nConf ? ` · <span style="color:var(--secondary)">${nConf} em conflito</span>` : ''}${nTrabAviso ? ` · <span style="color:var(--secondary)">${nTrabAviso} sobre trabalho (flexível)</span>` : ''}</span>
     <button class="btn btn-sm btn-primary" data-ed-salvar="${sem.idx}" ${ed.codigos.length ? '' : 'disabled'}>Salvar como nova grade personalizada</button>
     <button class="btn btn-sm btn-ghost" data-ed-limpar="${sem.idx}">Limpar</button>
     <button class="btn btn-sm btn-ghost" data-ed-fechar="1">Fechar</button></div></div>
 <div class="ed-cols">
     <div class="ed-col"><div class="ed-coltitle">Na grade (${ed.codigos.length})</div>${rows || '<div class="muted" style="padding:10px">Nenhuma matéria ainda — clique numa turma da lista ao lado para adicionar.</div>'}</div>
-    <div class="ed-col"><div class="ed-coltitle">Disponíveis <span class="muted" style="font-weight:400">— ordenadas por +score; clique numa turma p/ adicionar; turmas riscadas conflitam</span></div>${disp || '<div class="muted" style="padding:10px">Todas as matérias disponíveis já estão na grade.</div>'}</div>
+    <div class="ed-col"><div class="ed-coltitle">Disponíveis <span class="muted" style="font-weight:400">— as que reduzem algum requisito primeiro; clique numa turma p/ adicionar; turmas riscadas conflitam</span></div>${disp || '<div class="muted" style="padding:10px">Todas as matérias disponíveis já estão na grade.</div>'}</div>
 </div></div>`;
 }
 
@@ -1134,15 +1128,15 @@ function editorHTML(sem) {
 // Checklist de integralização (mesma estrutura usada nos cartões de formatura, "quase lá" e "sem solução").
 function reqsFormatura(sem) {
     const h = sem.horas; const m = S.manuais;
+    const manuais = h.obrigatorias.manuaisPendentes.map(c => [`${(D.byCod.get(c) || {}).nome || c} (marcar quando concluir)`, false]);
     return [
-        ['Obrigatórias', h.obrigatorias.faltante === 0],
-        ['Segundo Estrato [1159]', h.conj1159.faltante === 0],
-        ['Humanidades [1161]', h.conj1161.faltante === 0],
-        ['3 trilhas validadas + carga', h.trilhas.validadas >= 3 && h.trilhas.faltante === 0],
-        ['Eletivas (105h)', h.eletivas.faltante === 0],
-        ['Extensão (330h)', h.extensao.faltante === 0],
-        ['ENADE Concluinte', m.enade.done],
-        ['TCC 2 (ICSX41)', D.cursadasFinal && D.cursadasFinal.has('ICSX41')],
+        ['Obrigatórias com aula', !h.obrigatorias.pendentes.length],
+        ...manuais,
+        ...h.conjuntos.map(c => [`${c.nome} [${c.id}] (${c.total}h)`, c.ok]),
+        ...(h.trilhas ? [[`${h.trilhas.nome}: ${h.trilhas.minimoValidadas} subáreas validadas somando ${h.trilhas.total}h`, h.trilhas.ok]] : []),
+        [`Eletivas (${h.eletivas.total}h)`, h.eletivas.ok],
+        [`Extensão (${h.extensao.total}h)`, h.extensao.ok],
+        ['ENADE Concluinte (lembrete; não muda o semestre de formatura)', m.enade.done],
     ];
 }
 function reqListHTML(reqs) {
@@ -1287,7 +1281,7 @@ async function onClick(e) {
     const elm = t.closest('[data-ed-limpar]'); if (elm) return editorLimpar();
     const efc = t.closest('[data-ed-fechar]'); if (efc) return fecharEditor();
     const dcu = t.closest('[data-del-custom]'); if (dcu) return delCustom(+dcu.dataset.sem, +dcu.dataset.delCustom);
-    const upd = t.closest('[data-upd-gnh]'); if (upd) return atualizarGNH(+upd.dataset.updGnh);
+    if (t.closest('[data-carregar-oferta]')) return carregarOutraOferta();
     const dc = t.closest('[data-desconfirmar]'); if (dc) { delete S.escolhas[+dc.dataset.desconfirmar]; salvar(); render(); return; }
     const ab = t.closest('[data-abrir-blocos]'); if (ab) { const el = document.getElementById('blocos-' + ab.dataset.abrirBlocos) as HTMLDetailsElement | null; if (el) { el.open = true; el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } return; }
 
@@ -1409,7 +1403,7 @@ function escolherGrade(i) {
     if (String(i).startsWith('p')) g = sem.personalizadas[+i.slice(1)];
     else g = sem.grades[+i];
     if (!g) return;
-    S.escolhas[sem.idx] = { codigos: g.sel.map(s => s.disciplina.codigo), turmas: Object.fromEntries(g.sel.map(s => [s.disciplina.codigo, s.turma ? s.turma.turma : null])), score: g.score, custom: g.custom };
+    S.escolhas[sem.idx] = { codigos: g.sel.map(s => s.disciplina.codigo), turmas: Object.fromEntries(g.sel.map(s => [s.disciplina.codigo, s.turma ? s.turma.turma : null])), custom: !!g.custom };
     limparEscolhasApos(sem.idx);
     salvar(); toast('Grade confirmada para ' + sem.rotulo + ' · semestres seguintes recalculados'); render();
 }
@@ -1492,15 +1486,26 @@ function manualAction(btn) {
     salvar(); render();
 }
 /* ---------- Turmas Abertas (Portal do Aluno) ---------- */
+/** Turmas e semestre da oferta ("AAAA/S", ou `null` se o cabeçalho não trouxer). */
 async function lerTurmas(file) {
-    const pages = await extrairPaginas(file); return K.parseTurmasAbertas(pages);
+    const pages = await extrairPaginas(file);
+    const sem = K.semestreDaOferta(pages);
+    return { turmas: K.parseTurmasAbertas(pages), semestre: sem ? `${sem.ano}/${sem.per}` : null };
 }
-function atualizarGNH(semIdx) {
+/** Guarda as Turmas Abertas de outro semestre; os semestres da mesma paridade passam a usá-las como oferta. */
+function carregarOutraOferta() {
     const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/pdf,.pdf';
     inp.onchange = async () => {
         if (!inp.files[0]) return; toast('Lendo Turmas Abertas…');
-        try { const g = await lerTurmas(inp.files[0]); if (!g.length) throw new Error('vazio'); S.parsed.gnh = g; salvar(); toast('Turmas Abertas atualizada com ' + g.length + ' turmas.'); render(); }
-        catch (err) { toast('Falha ao ler o PDF de Turmas Abertas.'); console.error(err); log('pdf.turmas.atualizar.falha', descreverErro(err), 'error'); }
+        try {
+            const { turmas, semestre } = await lerTurmas(inp.files[0]);
+            if (!turmas.length) throw new Error('nenhuma turma reconhecida');
+            if (!semestre) throw new Error('semestre da oferta não encontrado no cabeçalho');
+            if (semestre === (S.parsed.gnhSemestre || rotuloSem(0))) S.parsed.gnh = turmas;
+            else S.ofertas = { ...(S.ofertas || {}), [semestre]: turmas };
+            log('pdf.turmas.outra_oferta', { semestre, turmas: turmas.length });
+            salvar(); toast(`Oferta de ${semestre} carregada (${turmas.length} turmas).`); render();
+        } catch (err) { toast('Falha ao ler o PDF de Turmas Abertas: ' + err.message); console.error(err); log('pdf.turmas.outra_oferta.falha', descreverErro(err), 'error'); }
     };
     inp.click();
 }
@@ -1548,13 +1553,14 @@ async function processar() {
         if (!estrutura.ok) throw new ErroConteudoPdf('historico-optativas', estrutura.problemas);
         const matrizCurso = estrutura.matriz;
         setp('Lendo Turmas Abertas…');
-        let gnh; try { gnh = await lerTurmas(S.files.gnh); } catch (e) { log('pdf.turmas.excecao', descreverErro(e), 'error'); throw new Error('gnh'); }
+        let lidas; try { lidas = await lerTurmas(S.files.gnh); } catch (e) { log('pdf.turmas.excecao', descreverErro(e), 'error'); throw new Error('gnh'); }
+        const gnh = lidas.turmas;
         const presenciais = gnh.filter(t => /Presencial/i.test(t.enquadramento));
         log('pdf.turmas', { turmas: gnh.length, comHorario: gnh.filter(t => t.horarios.length).length, semOferta: gnh.filter(t => t.semOferta).length, presenciaisSemHorario: presenciais.filter(t => !t.horarios.length).map(t => `${t.codigo}/${t.turma}`), ms: decorrido() });
         if (!gnh.length) throw new Error('gnh');
         if (!gnh.some(t => t.horarios.length)) throw new Error('gnh-horarios');
 
-        S.parsed = { matriz: matrizCurso, historico, gnh };
+        S.parsed = { matriz: matrizCurso, historico, gnh, gnhSemestre: lidas.semestre };
         const eqd = K.detectarEquivalencias(matrizCurso, gnh);
         log('pdf.equivalencias', { automaticas: eqd.auto, divergencias: eqd.divergencias.map(d => `${d.gnhCod}→${d.matrizCod}`) });
         S.equivalencias = { ...eqd.auto };
@@ -1602,6 +1608,7 @@ document.addEventListener('drop', e => {
     if (!S.parsed || !S.parsed.matriz) S.fase = 'upload';
     iniciarLog({ fase: S.fase, estadoRestaurado: !!(saved && saved.parsed && saved.parsed.matriz) });
     registrarEstado(S);
+    carregarSolver().then(() => { solverPronto = true; }).catch(err => log('solver.falha', descreverErro(err), 'error'));
     render();
 })();
 

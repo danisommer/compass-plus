@@ -39,11 +39,6 @@ export interface LinhaResumoGeral { total: number; cursada: number; aprovadaOuVa
 export interface ResumoGeral { obrigatorias: LinhaResumoGeral | null; optativas: LinhaResumoGeral | null; eletivas: LinhaResumoGeral | null; extensao: { total: number; cursada: number; faltante: number } | null; }
 export type EstruturaConjuntos = { ok: true; matriz: Matriz } | { ok: false; problemas: string[] };
 
-/* ---------- Constantes do curso (currículo) ---------- */
-const REQUISITOS = {
-    complementares: 90,
-};
-
 /* ---------- Utilidades de texto ---------- */
 function norm(s) {
     return (s || '').toString().normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -220,7 +215,7 @@ function estruturarConjuntos(m: Matriz, r: ResumoOptativas | null): EstruturaCon
     const pai = r.trilhas ? r.conjuntos.find(c => c.id === r.trilhas.id) : null;
     const problemas: string[] = [];
     if (r.trilhas && !pai) problemas.push(`o conjunto de trilhas ${r.trilhas.id} não aparece no "Resumo Optativas"`);
-    const paiDaSubarea = new Map((r.trilhas ? r.trilhas.subareas : []).map(s => [s.id, r.trilhas.id]));
+    const paiDaSubarea = new Map((r.trilhas ? r.trilhas.subareas : []).map((s): [string, string] => [s.id, r.trilhas.id]));
     const conhecidos = new Set([...r.conjuntos.map(c => c.id), ...paiDaSubarea.keys()]);
     const desconhecidos = [...new Set(m.disciplinas.filter(d => d.isOpcional && !conhecidos.has(d.conjuntoOptativo)).map(d => d.conjuntoOptativo))];
     if (desconhecidos.length) problemas.push(`a matriz cita conjunto(s) que o histórico não descreve: ${desconhecidos.join(', ')}`);
@@ -278,7 +273,7 @@ function conjuntoDaLinha(t: string): ConjuntoHistorico | null {
     const m = t.match(RE_LINHA_CONJUNTO);
     if (!m) return null;
     return {
-        id: m[1], nome: m[2], periodoInicial: +m[3], periodoFinal: +m[4], chs: +m[5],
+        id: m[1], nome: tituloCase(m[2]), periodoInicial: +m[3], periodoFinal: +m[4], chs: +m[5],
         chObrigatoria: numeroHistorico(m[6]), chCursada: numeroHistorico(m[7]),
         chFaltante: m[8] === 'Faltantes' ? null : numeroHistorico(m[8]), chValidada: numeroHistorico(m[9]),
     };
@@ -496,6 +491,13 @@ function parseTurmasAbertas(pages) {
     return turmas;
 }
 
+/** Semestre da oferta impresso no cabeçalho das Turmas Abertas ("2º Semestre de 2026"); `null` se não houver. */
+function semestreDaOferta(pages): { ano: number; per: number } | null {
+    const texto = reconstruirLinhas(pages.slice(0, 1)).map(l => l.map(t => t.t).join(' ')).join('\n');
+    const m = texto.match(/([12])\s*[º°o]\s+Semestre\s+de\s+(\d{4})/i);
+    return m ? { ano: +m[2], per: +m[1] } : null;
+}
+
 /* ===================================================================
     Equivalências GNH↔Matriz + divergências
     =================================================================== */
@@ -519,14 +521,13 @@ function detectarEquivalencias(matriz, gnh) {
 
 /* ---------- exports ---------- */
 export {
-    REQUISITOS,
     norm, dice, isCodigo, tituloCase, reconstruirLinhas,
-    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, detectarEquivalencias,
+    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, semestreDaOferta, detectarEquivalencias,
 };
 
 const Parser = {
     norm, dice, reconstruirLinhas,
-    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, detectarEquivalencias,
-    tituloCase, REQUISITOS,
+    parseMatriz, verificarMatriz, estruturarConjuntos, parseHistorico, parseTurmasAbertas, semestreDaOferta, detectarEquivalencias,
+    tituloCase,
 };
 export default Parser;

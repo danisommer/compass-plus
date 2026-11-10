@@ -13,6 +13,7 @@
     "fixture": "tsx scripts/gerar-fixture.ts"
   },
   "dependencies": {
+    "highs": "^1.15.4",
     "pdfjs-dist": "^4.10.38",
     "sortablejs": "^1.15.6"
   },

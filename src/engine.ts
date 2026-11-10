@@ -1,11 +1,11 @@
 /* ===================================================================
-    Compass+ — Motor de cálculos e planejamento (puro, sem DOM; testável em Node).
-    Grafo de dependências, geração de grades, alocação de trabalho e cálculo de
-    horas faltantes. Consome as estruturas produzidas pelo parser de PDFs
-    (`parser.ts`). Módulo ES: exporta `default` o objeto API (importado como `K`
-    nos demais módulos), reunindo parsing + cálculos numa única superfície.
+    Compass+ — Motor de cálculos (puro, sem DOM; testável em Node).
+    Grafo de dependências, candidatas por semestre, filtro de turmas pelas
+    preferências e alocação de trabalho. O plano até a formatura fica em
+    `planejador.ts` e os requisitos em `requisitos.ts`. Módulo ES: exporta `default`
+    o objeto API (importado como `K` nos demais módulos), reunindo parsing + cálculos.
     =================================================================== */
-import Parser, { REQUISITOS } from './parser';
+import Parser from './parser';
 
 /* ---------- Constantes de horário (Apêndice A) ---------- */
 const SLOTS = {
@@ -255,14 +255,6 @@ function ocupacaoPorDia(sel) {
     return o;
 }
 
-// custo do trabalho p/ uma ocupação (usado no score do motor)
-function custoTrab(w, ocupadoPorDia) {
-    w = normTrab(w);
-    if (!w.trabalha || !(+w.horas > 0)) return { deficit: 0, conflitosNucleo: 0, rigidConf: 0 };
-    const info = {}; for (const d of DIAS_UTEIS) info[d] = analiseDia(w, ocupadoPorDia[d] || []);
-    const { deficit, conflitosNucleo, rigidConf } = alocarTrab(w, info);
-    return { deficit, conflitosNucleo, rigidConf };
-}
 
 // blocos de trabalho calculados p/ uma grade (precisão de minutos) — exibição
 function blocosTrabalhoCalc(w, ocupadoPorDia) {
@@ -303,37 +295,12 @@ function getDisponiveis(grafo, cursadas) {
     grafo.forEach((v, cod) => { let ok = true; v.in.forEach(p => { if (!cursadas.has(p)) ok = false; }); if (ok && !cursadas.has(cod)) out.push(cod); });
     return out;
 }
-function getDesbloqueaveis(grafo, codigo, cursadas) {
-    const v = grafo.get(codigo); if (!v) return [];
-    const futuras = new Set([...cursadas, codigo]);
-    const out = [];
-    v.out.forEach(nx => { const w = grafo.get(nx); let ok = true; w.in.forEach(p => { if (!futuras.has(p)) ok = false; }); if (ok && !cursadas.has(nx)) out.push(nx); });
-    return out;
-}
-// fecho transitivo de descendentes: todas as matérias que dependem (direta/indiretamente) de cada código.
-// Memoizado; assume grafo acíclico (com guarda contra ciclos por garantia).
-function descendentesTransitivos(grafo) {
-    const memo = new Map();
-    const dfs = (cod, pilha) => {
-        if (memo.has(cod)) return memo.get(cod);
-        const acc = new Set(); const v = grafo.get(cod);
-        if (v) v.out.forEach(nx => { if (pilha.has(nx)) return; acc.add(nx); pilha.add(nx); dfs(nx, pilha).forEach(x => acc.add(x)); pilha.delete(nx); });
-        memo.set(cod, acc); return acc;
-    };
-    grafo.forEach((_, cod) => { if (!memo.has(cod)) dfs(cod, new Set([cod])); });
-    return memo;
-}
-
-function conflita(hA, hB) {
-    for (const a of hA) for (const b of hB) if (a.diaSemana === b.diaSemana && a.periodo === b.periodo && a.slot === b.slot) return true;
-    return false;
-}
 function bloqueado(horarios, bloqueios) {
     for (const h of horarios) for (const b of bloqueios) if (h.diaSemana === b.diaSemana && h.periodo === b.periodo && h.slot === b.slot) return true;
     return false;
 }
 // alguma aula de `horarios` invade a janela de trabalho FIXO [inicio, fim] (com folga)?
-// Mesma regra usada em gerarGrades para descartar turmas quando o trabalho é modo === 'fixo'.
+// Mesma regra usada pelo planejador para descartar turmas quando o trabalho é modo === 'fixo'.
 function conflitaTrabalhoFixo(horarios, w) {
     w = normTrab(w);
     const wIni = hhmmMin(w.inicio), wFim = hhmmMin(w.fim), gap = Math.max(0, +w.folga || 0);
@@ -341,6 +308,20 @@ function conflitaTrabalhoFixo(horarios, w) {
         const sm = SLOT_MIN[h.periodo + h.slot];
         if (!sm) return false;
         return (sm.fim + gap) > wIni && (sm.ini - gap) < wFim;
+    });
+}
+
+const ORDEM_DO_SLOT = new Map(ORDEM_SLOTS.map(([p, s], i): [string, number] => [p + s, i]));
+const JANELA_INTEIRA = { inicio: 'M1', fim: 'N5' };
+/** A turma cabe no campus, nos turnos e na janela de horário ("aulas a partir de… até…") das preferências? Turma sem horário sempre cabe. */
+function turmaNasPreferencias(t, pref) {
+    if (t.semOferta) return true;
+    if (pref.campusUnico && t.campus !== pref.campus) return false;
+    const janela = pref.janela || JANELA_INTEIRA;
+    const ini = ORDEM_DO_SLOT.get(janela.inicio) ?? 0, fim = ORDEM_DO_SLOT.get(janela.fim) ?? ORDEM_SLOTS.length - 1;
+    return (t.horarios || []).every(h => {
+        const o = ORDEM_DO_SLOT.get(h.periodo + h.slot);
+        return pref.turnos.includes(h.periodo) && (o === undefined || (o >= ini && o <= fim));
     });
 }
 
@@ -355,12 +336,7 @@ function candidatasSemestre(ctx, cursadas, emAndamento, usarGNH) {
         if (/^(ENADE|ESTÁGIO)/.test(d.modeloDisciplina) && d.chSemanal === 0) { /* estágio sem aula */ }
         let turmasViaveis = (gnhByCod.get(cod) || []);
         if (usarGNH) {
-            turmasViaveis = turmasViaveis.filter(t => {
-                if (t.semOferta) return true;                 // consta na oferta sem turma/horário detalhado — não bloquear
-                if (pref.campusUnico && t.campus !== pref.campus) return false;
-                if (t.horarios.length && !t.horarios.every(h => pref.turnos.includes(h.periodo))) return false;
-                return true;
-            });
+            turmasViaveis = turmasViaveis.filter(t => turmaNasPreferencias(t, pref));
             // prioridade do curso (SI): só ORDENA (melhor prioridade primeiro). Nunca exclui:
             // toda turma listada em Turmas Abertas é considerada, mesmo Fechada ou sem vagas.
             turmasViaveis = turmasViaveis.slice()
@@ -374,228 +350,19 @@ function candidatasSemestre(ctx, cursadas, emAndamento, usarGNH) {
     return cand;
 }
 
-/* Prioridade (3.4.1) */
-// periodoRef = período "nominal" do semestre sendo planejado (período atual + nº de semestres à frente).
-// Matérias atrasadas/do período atual têm prioridade; obrigatórias de período muito futuro (ex.: TCC) decaem.
-function prioridade(ctx, cand, cursadas, faltantesObrig, periodoRef, conjFeitos) {
-    const { grafo, pref } = ctx;
-    if (!ctx._descMemo) ctx._descMemo = descendentesTransitivos(grafo);
-    const P = periodoRef || 8;
-    return cand.map(c => {
-        const d = c.disciplina;
-        const fanout = getDesbloqueaveis(grafo, d.codigo, cursadas).length;     // destrava agora (1 nível)
-        const descSet = ctx._descMemo.get(d.codigo);
-        let alcance = 0; if (descSet) descSet.forEach(x => { if (!cursadas.has(x)) alcance++; });  // dependentes futuros ainda não cursados
-        const obrig = !d.isOpcional;
-        const isFaltObrig = obrig && faltantesObrig.has(d.codigo);
-        const trilhaRank = (d.subAreaTrilha && pref.preferenciaTrilhas.indexOf(d.subAreaTrilha) >= 0)
-            ? (pref.preferenciaTrilhas.length - pref.preferenciaTrilhas.indexOf(d.subAreaTrilha)) : 0;
-        // atraso em períodos: >0 atrasada (período passado), 0 = período atual, <0 = futura.
-        // Vale para TODAS as matérias (inclui optativas: 2º estrato/humanidades = 3º, trilhas = 4º).
-        const atrasoP = P - (d.periodoSugerido || 8);
-        const base = atrasoP >= 0
-            ? 30000 + Math.min(atrasoP, 6) * 2500        // atrasada/atual: quanto mais velha, mais urgente
-            : Math.max(0, 22000 + atrasoP * 5000);       // futura: decai forte a cada período à frente
-        let key = base + (obrig ? 4000 : 0) + alcance * 8 + fanout * 30 + trilhaRank * 5;
-        // conjunto optativo já satisfeito (2º estrato/humanidades/trilhas): para de empilhar essas optativas
-        if (conjFeitos && d.isOpcional && conjFeitos[d.conjuntoOptativo]) key -= 40000;
-        return Object.assign({}, c, { fanout, alcance, obrig, isFaltObrig, trilhaRank, _key: key });
-    }).sort((a, b) => b._key - a._key);
-}
-
-/* Geração de grades por backtracking com prazo (3.4.2-4) */
-function gerarGrades(ctx, candOrdenadas, pref, bloqueios, usarGNH, deadline, trabConfig) {
-    const min = pref.cargaMin, max = pref.cargaMax;
-    // Pool de busca (mantém a ordem de prioridade): top-18 optativas + TODAS as obrigatórias
-    // disponíveis, mesmo as de período futuro que a prioridade rebaixa (cada obrigatória pesa muito
-    // no score).
-    const pool = candOrdenadas.filter((c, i) => i < 18 || !c.disciplina.isOpcional);
-    const grades = [];          // grades que atingem o mínimo de disciplinas
-    const parciais = [];        // melhores grades possíveis ABAIXO do mínimo (fallback p/ oferta insuficiente)
-    let nodes = 0;
-    const trab = trabConfig && trabConfig.trabalha && (+trabConfig.horas > 0) ? trabConfig : null;
-
-    function score(sel) {
-        let nObr = 0, fan = 0, alc = 0, nTri = 0, nBlk = 0;
-        for (const s of sel) { if (s.obrig) nObr++; fan += s.fanout; alc += (s.alcance || 0); if (s.trilhaRank > 0) nTri++; if (s.bloqueado) nBlk++; }
-        let penTrab = 0;
-        if (trab) { const ct = custoTrab(trab, ocupacaoPorDia(sel)); penTrab = 12 * ct.deficit + 40 * ct.conflitosNucleo + 25 * ct.rigidConf; }
-        return 100 * nObr + 8 * fan + 2 * alc + 12 * nTri - 40 * nBlk - 6 * sel.length - penTrab;
-    }
-    function rec(idx, sel, ocup) {
-        if (Date.now() > deadline) return;
-        nodes++;
-        if (sel.length >= min) {
-            grades.push({ sel: sel.map(s => ({ ...s })), score: score(sel) });
-        }
-        if (sel.length >= max) return;
-        let estendeu = false;
-        for (let i = idx; i < pool.length; i++) {
-            const c = pool[i];
-            // escolher melhor turma viável (sem conflito; bloqueio vira rascunho)
-            let chosen = null;
-            for (const t of c.turmas) {
-                if (usarGNH && t.horarios.length && conflita(t.horarios, ocup)) continue;
-                if (trab && trab.modo === 'fixo' && t.horarios.length) {
-                    // RESTRIÇÃO MÁXIMA: horário fixo é COMANDO, não sugestão.
-                    // Nenhuma aula pode sobrepor a janela de trabalho [inicio, fim] em qualquer dia,
-                    // incluindo a folga (intervalo mínimo trabalho↔aula) configurada — respeitada de igual forma.
-                    const wIni = hhmmMin(trab.inicio), wFim = hhmmMin(trab.fim);
-                    const gap = Math.max(0, +trab.folga || 0);
-                    const violaRestr = t.horarios.some(h => {
-                        const sm = SLOT_MIN[h.periodo + h.slot];
-                        if (!sm) return false;
-                        // sobreposição com folga: slot + gap ultrapassa o início do trabalho,
-                        // ou slot começa antes do fim + folga do trabalho.
-                        return (sm.fim + gap) > wIni && (sm.ini - gap) < wFim;
-                    });
-                    if (violaRestr) continue;
-                }
-                const blk = bloqueado(t.horarios, bloqueios);
-                if (!chosen || (chosen.bloqueado && !blk)) chosen = { ...c, turma: t, bloqueado: blk, horarios: t.horarios };
-                if (!blk) break;
-            }
-            if (!chosen) continue;
-            estendeu = true;
-            const novoOcup = ocup.concat(chosen.horarios);
-            rec(i + 1, sel.concat(chosen), novoOcup);
-            if (Date.now() > deadline) return;
-        }
-        // Sem turmas suficientes p/ o mínimo: registra a melhor grade possível com o que há
-        // (seleção maximal que não pode mais crescer). Usada só se nenhuma grade atingir o mínimo.
-        if (!estendeu && sel.length > 0 && sel.length < min) {
-            parciais.push({ sel: sel.map(s => ({ ...s })), score: score(sel) });
-        }
-    }
-    rec(0, [], []);
-
-    // dedup por conjunto de códigos, top-5 por score
-    // se nenhuma grade atinge o mínimo, cai p/ as melhores grades parciais (oferta insuficiente),
-    // ordenadas primeiro pelo nº de matérias (o mais perto da carga mínima) e depois pelo score
-    const base = grades.length ? grades : parciais;
-    const vistos = new Set(); const unicas = [];
-    base.sort(grades.length ? (a, b) => b.score - a.score : (a, b) => (b.sel.length - a.sel.length) || (b.score - a.score));
-    for (const g of base) {
-        const key = g.sel.map(s => s.disciplina.codigo).sort().join(',');
-        if (vistos.has(key)) continue; vistos.add(key); unicas.push(g);
-        if (unicas.length >= 5) break;
-    }
-    return { grades: unicas, nodes, estourou: Date.now() > deadline };
-}
-
-/* Score de uma seleção arbitrária (grades personalizadas/editadas) — mesma fórmula do motor */
-function pontuarSel(ctx, selRaw, cursadas, faltObrig, pref, bloqueios, trabConfig) {
-    if (!ctx._descMemo) ctx._descMemo = descendentesTransitivos(ctx.grafo);
-    let nObr = 0, fan = 0, alc = 0, nTri = 0, nBlk = 0;
-    for (const s of (selRaw || [])) {
-        const d = s.disciplina; if (!d) continue;
-        fan += getDesbloqueaveis(ctx.grafo, d.codigo, cursadas).length;
-        const desc = ctx._descMemo.get(d.codigo); if (desc) desc.forEach(x => { if (!cursadas.has(x)) alc++; });
-        if (!d.isOpcional) nObr++;
-        if (d.subAreaTrilha && pref.preferenciaTrilhas.indexOf(d.subAreaTrilha) >= 0) nTri++;
-        const blk = s.bloqueado != null ? s.bloqueado : bloqueado(s.horarios || [], bloqueios || []);
-        if (blk) nBlk++;
-    }
-    let penTrab = 0;
-    if (trabConfig && trabConfig.trabalha && +trabConfig.horas > 0) { const ct = custoTrab(trabConfig, ocupacaoPorDia(selRaw)); penTrab = 12 * ct.deficit + 40 * ct.conflitosNucleo + 25 * ct.rigidConf; }
-    return Math.round(100 * nObr + 8 * fan + 2 * alc + 12 * nTri - 40 * nBlk - 6 * (selRaw ? selRaw.length : 0) - penTrab);
-}
-
-/* Detalhamento do score (mesma fórmula de pontuarSel) — para o tooltip "como o score foi obtido". */
-function pontuarSelDetalhe(ctx, selRaw, cursadas, faltObrig, pref, bloqueios, trabConfig) {
-    if (!ctx._descMemo) ctx._descMemo = descendentesTransitivos(ctx.grafo);
-    let nObr = 0, fan = 0, alc = 0, nTri = 0, nBlk = 0;
-    for (const s of (selRaw || [])) {
-        const d = s.disciplina; if (!d) continue;
-        fan += getDesbloqueaveis(ctx.grafo, d.codigo, cursadas).length;
-        const desc = ctx._descMemo.get(d.codigo); if (desc) desc.forEach(x => { if (!cursadas.has(x)) alc++; });
-        if (!d.isOpcional) nObr++;
-        if (d.subAreaTrilha && pref.preferenciaTrilhas.indexOf(d.subAreaTrilha) >= 0) nTri++;
-        const blk = s.bloqueado != null ? s.bloqueado : bloqueado(s.horarios || [], bloqueios || []);
-        if (blk) nBlk++;
-    }
-    const len = selRaw ? selRaw.length : 0;
-    let deficit = 0, conflitosNucleo = 0, rigidConf = 0;
-    if (trabConfig && trabConfig.trabalha && +trabConfig.horas > 0) { const ct = custoTrab(trabConfig, ocupacaoPorDia(selRaw)); deficit = ct.deficit; conflitosNucleo = ct.conflitosNucleo; rigidConf = ct.rigidConf; }
-    const penTrab = 12 * deficit + 40 * conflitosNucleo + 25 * rigidConf;
-    const partes = [
-        { label: 'Obrigatórias', n: nObr, peso: 100, val: 100 * nObr },
-        { label: 'Destrava agora (fan-out)', n: fan, peso: 8, val: 8 * fan },
-        { label: 'Dependentes futuros (alcance)', n: alc, peso: 2, val: 2 * alc },
-        { label: 'Trilhas preferidas', n: nTri, peso: 12, val: 12 * nTri },
-        { label: 'Em conflito com bloqueio', n: nBlk, peso: -40, val: -40 * nBlk },
-        { label: 'Nº de disciplinas', n: len, peso: -6, val: -6 * len },
-        { label: 'Penalidade de trabalho', n: null, peso: null, val: -penTrab },
-    ];
-    const total = Math.round(100 * nObr + 8 * fan + 2 * alc + 12 * nTri - 40 * nBlk - 6 * len - penTrab);
-    return { nObr, fan, alc, nTri, nBlk, len, deficit, conflitosNucleo, rigidConf, penTrab, total, partes };
-}
-
-/* ===================================================================
-    Cálculo de horas faltantes (validado contra histórico oficial)
-    =================================================================== */
-function calcularHoras(matriz, cursadasSet, extras) {
-    const byCod = new Map(matriz.disciplinas.map(d => [d.codigo, d]));
-    const aprov = d => cursadasSet.has(d.codigo);
-    let obrCursada = 0;
-    matriz.disciplinas.filter(d => !d.isOpcional).forEach(d => { if (aprov(d)) obrCursada += d.chTotal; });
-
-    const porConjunto = {};
-    const addConj = (id, ch) => { porConjunto[id] = porConjunto[id] || { cursada: 0 }; porConjunto[id].cursada += ch; };
-    matriz.disciplinas.filter(d => d.isOpcional).forEach(d => {
-        if (!aprov(d)) return;
-        if (d.conjuntoOptativo === '1160' && d.subAreaTrilha) addConj(d.subAreaTrilha, d.chTotal);
-        else addConj(d.conjuntoOptativo, d.chTotal);
-    });
-    const c1159 = porConjunto['1159']?.cursada || 0;
-    const c1161 = porConjunto['1161']?.cursada || 0;
-    const chConjunto = id => (matriz.resumo.conjuntosOptativos.find(c => c.id === id) || { chObrigatoria: 0 }).chObrigatoria;
-    const regra = matriz.resumo.trilhas || { chObrigatoria: 0, minimoValidadas: 0, subareas: [] };
-    // trilhas: validação parcial (3 subáreas) — soma simples de CH cursada em subáreas
-    let trilhaCursada = 0; const subStatus: any = {};
-    regra.subareas.forEach(s => {
-        const ch = porConjunto[s.id]?.cursada || 0; trilhaCursada += ch;
-        subStatus[s.id] = { nome: s.nome, total: s.chObrigatoria, cursada: ch, validada: ch >= s.chObrigatoria, faltante: Math.max(0, s.chObrigatoria - ch) };
-    });
-    const validadas = Object.values(subStatus).filter((s: any) => s.validada).length;
-
-    // extensão: ICSX20(60 obrig) + optativas aprovadas com chExt
-    let extCursada = 0;
-    matriz.disciplinas.forEach(d => { if (aprov(d) && d.chExt > 0) extCursada += d.chExt; });
-
-    const eletivaCursada = (extras && extras.eletivaManual) || 0;
-
-    const totais = matriz.resumo;
-    const linha = (req, cur) => ({ total: req, cursada: cur, faltante: Math.max(0, req - cur), ok: cur >= req });
-    return {
-        obrigatorias: linha(totais.chObrigatoriaTotal, obrCursada),
-        optativasTotal: linha(totais.chOptativasTotal, c1159 + c1161 + trilhaCursada),
-        conj1159: linha(chConjunto('1159'), c1159),
-        conj1161: linha(chConjunto('1161'), c1161),
-        trilhas: {
-            total: regra.chObrigatoria, cursada: trilhaCursada, necessarias: regra.minimoValidadas,
-            faltante: Math.max(0, regra.chObrigatoria - trilhaCursada),
-            validadas, ok: validadas >= regra.minimoValidadas && trilhaCursada >= regra.chObrigatoria
-        },
-        subStatus,
-        eletivas: linha(totais.chEletivaTotal, eletivaCursada),
-        extensao: linha(totais.chExtensaoTotal, extCursada),
-        complementares: linha(REQUISITOS.complementares, cursadasSet.has('ICSX50') ? REQUISITOS.complementares : 0),
-    };
-}
 
 /* ---------- exports ----------
     API combinada (parsing + cálculos) preservada para compat: importada como `K`.
     O parsing vive em `parser.ts` e é reexposto aqui via spread de `Parser`. */
 const API = {
     ...Parser,
-    construirGrafo, getDisponiveis, getDesbloqueaveis, descendentesTransitivos, pontuarSel, pontuarSelDetalhe,
-    candidatasSemestre, prioridade, gerarGrades, calcularHoras, conflita, bloqueado, conflitaTrabalhoFixo,
+    construirGrafo, getDisponiveis,
+    candidatasSemestre, turmaNasPreferencias, JANELA_INTEIRA, bloqueado, conflitaTrabalhoFixo,
     SLOTS, DIAS,
     ORDEM_SLOTS, hhmmMin, slotTexto, blocosTrabalho,
     DIAS_UTEIS, DEFAULT_TRAB, normTrab, fmtHHMM, fmtDur, janelaTrab, janelaHoras, capacidadeDia,
     janelaCapSemanal, spanMinPara, ajustarJanelaParaHoras,
-    analiseDia, placeBloco, alocarTrab, ocupacaoPorDia, custoTrab, blocosTrabalhoCalc
+    analiseDia, placeBloco, alocarTrab, ocupacaoPorDia, blocosTrabalhoCalc
 };
 
 export default API;

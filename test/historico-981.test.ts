@@ -17,7 +17,7 @@ describe('Histórico da matriz 981 (fixture anonimizada)', () => {
             ['1161', 135, 90, 45],
             ['1160', 345, 0, null],
         ]);
-        expect(historico.resumoOptativas.conjuntos[2].nome).toBe('Terceiro Estrato - Trilhas Em Computação');
+        expect(historico.resumoOptativas.conjuntos[2].nome).toBe('Terceiro Estrato - Trilhas em Computação');
     });
 
     it('lê a regra das trilhas: 12 subáreas de 90 h, 3 validadas', () => {
@@ -26,7 +26,7 @@ describe('Histórico da matriz 981 (fixture anonimizada)', () => {
         expect(trilhas.minimoValidadas).toBe(3);
         expect(trilhas.subareas).toHaveLength(12);
         expect(new Set(trilhas.subareas.map(s => s.chObrigatoria))).toEqual(new Set([90]));
-        expect(trilhas.subareas.find(s => s.id === '1173').nome).toBe('Otimização, Mod Analíticos E Simulação');
+        expect(trilhas.subareas.find(s => s.id === '1173').nome).toBe('Otimização, Mod Analíticos e Simulação');
     });
 
     it('lê o "Resumo Eletiva"', () => {
